@@ -10,11 +10,24 @@ use App\Services\ViewTrackingService;
 use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Inertia\Inertia;
 
 class MarketplaceController extends Controller
 {
+    use \App\Http\Controllers\Concerns\MapsMarketplaceProps;
+
     private const ALLOWED_SORTS = [
         'newest', 'oldest', 'price_asc', 'price_desc', 'popular', 'featured',
+    ];
+
+    /** Labels for the sort <select>, keyed by the ALLOWED_SORTS values. */
+    private const SORT_OPTIONS = [
+        'newest'     => 'Newest',
+        'oldest'     => 'Oldest',
+        'price_asc'  => 'Price ↑',
+        'price_desc' => 'Price ↓',
+        'popular'    => 'Most popular',
+        'featured'   => 'Featured first',
     ];
 
     public function index(Request $request)
@@ -130,10 +143,71 @@ class MarketplaceController extends Controller
             ? auth()->user()->favorites()->whereIn('asset_id', $assets->pluck('id'))->pluck('asset_id')->flip()
             : collect();
 
-        return view('marketplace.index', compact(
-            'assets', 'rootCategories', 'currentCategory', 'currentSubcategory',
-            'dynamicAttributes', 'sort', 'userFavoriteIds'
-        ));
+        return Inertia::render('Marketplace/Index', [
+            // through() maps each item while preserving the paginator, so the
+            // client still receives data/links/total for <Pagination>.
+            'assets'         => $assets->through(self::mapAsset($userFavoriteIds->all())),
+            'rootCategories' => $rootCategories->map(fn (Category $cat) => [
+                'slug'     => $cat->slug,
+                'name'     => $cat->name,
+                'icon'     => $cat->icon,
+                'children' => $cat->children->map(fn (Category $sub) => [
+                    'slug' => $sub->slug,
+                    'name' => $sub->name,
+                ])->values()->all(),
+            ])->values()->all(),
+            'currentCategory'    => $currentCategory ? [
+                'slug' => $currentCategory->slug,
+                'name' => $currentCategory->name,
+            ] : null,
+            'currentSubcategory' => $currentSubcategory ? [
+                'slug' => $currentSubcategory->slug,
+                'name' => $currentSubcategory->name,
+            ] : null,
+            // Only filterable attributes reach the client — the rest are for the
+            // listing form, not for filtering.
+            'dynamicAttributes'  => $dynamicAttributes
+                ->where('is_filterable', true)
+                ->map(fn (CategoryAttribute $attr) => [
+                    'key'     => 'attr_'.$attr->id,
+                    'label'   => $attr->label,
+                    'type'    => $attr->type,
+                    'unit'    => $attr->unit,
+                    'options' => $attr->safeOptions(),
+                ])->values()->all(),
+            // Echoed back so the Vue filter form is controlled by the URL, which
+            // keeps back/forward navigation and shared links correct.
+            'filters'     => self::currentFilters($request, $sort, $dynamicAttributes),
+            'sortOptions' => self::SORT_OPTIONS,
+        ]);
+    }
+
+    /**
+     * The filter state as the server understood it, echoed back to the client.
+     */
+    private static function currentFilters(Request $request, string $sort, $dynamicAttributes): array
+    {
+        $attributes = [];
+        foreach ($dynamicAttributes as $attr) {
+            foreach (['attr_'.$attr->id, 'attr_'.$attr->id.'_min', 'attr_'.$attr->id.'_max'] as $key) {
+                if ($request->filled($key)) {
+                    $attributes[$key] = (string) $request->input($key);
+                }
+            }
+        }
+
+        return [
+            'q'             => $request->input('q'),
+            'category'      => $request->input('category'),
+            'subcategory'   => $request->input('subcategory'),
+            'min_price'     => $request->input('min_price'),
+            'max_price'     => $request->input('max_price'),
+            'verified_only' => $request->boolean('verified_only'),
+            'featured_only' => $request->boolean('featured_only'),
+            'in_stock'      => $request->boolean('in_stock'),
+            'sort'          => $sort,
+            'attributes'    => $attributes,
+        ];
     }
 
     public function show(string $slug, Request $request, ViewTrackingService $tracker)

@@ -3,6 +3,7 @@ namespace Tests\Feature;
 
 use App\Models\Asset;
 use App\Models\Category;
+use App\Models\Favorite;
 use App\Models\User;
 use Inertia\Testing\AssertableInertia as Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -229,5 +230,89 @@ class InertiaMigrationTest extends TestCase
                 ->has('featuredAssets', 0)
                 ->has('latestAssets', 0)
             );
+    }
+
+    public function test_marketplace_renders_the_inertia_page_with_a_paginator(): void
+    {
+        [$category] = $this->seedOneAsset();
+        Asset::factory()->count(13)->create(['category_id' => $category->id]);
+
+        $this->get('/marketplace')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Marketplace/Index')
+                // paginate(12) over 14 assets
+                ->has('assets.data', 12)
+                ->where('assets.total', 14)
+                ->where('assets.current_page', 1)
+                ->where('assets.last_page', 2)
+                ->has('assets.links')
+                ->has('rootCategories', 1)
+                ->has('sortOptions')
+            );
+
+        $this->get('/marketplace?page=2')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->has('assets.data', 2)
+                ->where('assets.current_page', 2)
+            );
+    }
+
+    /** The Vue filter form is controlled by these, so they must round-trip. */
+    public function test_marketplace_echoes_the_filter_state_back(): void
+    {
+        $this->seedOneAsset();
+
+        $this->get('/marketplace?q=cooking&verified_only=1&min_price=100&sort=price_asc')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.q', 'cooking')
+                ->where('filters.verified_only', true)
+                ->where('filters.featured_only', false)
+                ->where('filters.min_price', '100')
+                ->where('filters.sort', 'price_asc')
+            );
+    }
+
+    /** ALLOWED_SORTS is a whitelist — anything else must fall back, not reach the query. */
+    public function test_marketplace_falls_back_to_newest_for_an_unknown_sort(): void
+    {
+        $this->seedOneAsset();
+
+        $this->get('/marketplace?sort=price_asc;DROP+TABLE+assets')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('filters.sort', 'newest'));
+    }
+
+    public function test_marketplace_search_narrows_the_results(): void
+    {
+        [$category] = $this->seedOneAsset();
+        Asset::factory()->create(['category_id' => $category->id, 'title' => 'Premium Domain Name']);
+
+        $this->get('/marketplace?q=Cooking')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->has('assets.data', 1)
+                ->where('assets.data.0.title', 'Established Cooking Page')
+            );
+    }
+
+    public function test_marketplace_flags_the_authenticated_users_favorites(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+        $user = User::factory()->create();
+        Favorite::create(['user_id' => $user->id, 'asset_id' => $asset->id]);
+
+        // Guest first: actingAs() persists for the rest of the test, so the
+        // unauthenticated assertion has to come before it.
+        $this->get('/marketplace')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('assets.data.0.is_favorited', false));
+
+        $this->actingAs($user)
+            ->get('/marketplace')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('assets.data.0.is_favorited', true));
     }
 }

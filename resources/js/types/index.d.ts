@@ -27,7 +27,7 @@ export interface Flash {
     status: string | null;
 }
 
-/** A category as mapped by PageController::mapCategory(). */
+/** A category as mapped by MapsMarketplaceProps::mapCategory(). */
 export interface Category {
     slug: string;
     name: string;
@@ -35,7 +35,50 @@ export interface Category {
     children_count: number;
 }
 
-/** An asset card's payload, as mapped by PageController::mapAsset().
+/** One entry from Laravel's paginator `links` array. */
+export interface PaginationLink {
+    url: string | null;
+    label: string;
+    active: boolean;
+}
+
+/** Laravel's LengthAwarePaginator, as serialised into an Inertia prop. */
+export interface Paginated<T> {
+    data: T[];
+    links: PaginationLink[];
+    current_page: number;
+    last_page: number;
+    per_page: number;
+    from: number | null;
+    to: number | null;
+    total: number;
+}
+
+/** A filterable EAV attribute, from MarketplaceController::index(). */
+export interface DynamicAttribute {
+    /** Request key, already prefixed — e.g. "attr_12". */
+    key: string;
+    label: string;
+    type: 'text' | 'number' | 'decimal' | 'boolean' | 'select' | 'multiselect' | 'date' | 'url';
+    unit: string | null;
+    options: string[];
+}
+
+/** Marketplace filter state, echoed back by the server so the form follows the URL. */
+export interface MarketplaceFilters {
+    q: string | null;
+    category: string | null;
+    subcategory: string | null;
+    min_price: string | null;
+    max_price: string | null;
+    verified_only: boolean;
+    featured_only: boolean;
+    in_stock: boolean;
+    sort: string;
+    attributes: Record<string, string>;
+}
+
+/** An asset card's payload, as mapped by MapsMarketplaceProps::mapAsset().
  *  Deliberately a whitelist — the Asset model has many more columns, and the
  *  client only needs what a card renders. Prices arrive pre-formatted because
  *  they are stored as integer poisha and App\Support\Money owns the
@@ -49,6 +92,7 @@ export interface AssetCardData {
     available_quantity: number;
     is_sold_out: boolean;
     is_featured: boolean;
+    is_favorited: boolean;
     cover_image_url: string | null;
     category: {
         name: string;
