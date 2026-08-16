@@ -23,7 +23,10 @@ class PageController extends Controller
         return view('legal.show', ['page' => self::pages()[$slug]]);
     }
 
-    public function contact() { return view('pages.contact'); }
+    public function contact()
+    {
+        return Inertia::render('Contact');
+    }
 
     public function contactSubmit(Request $request)
     {

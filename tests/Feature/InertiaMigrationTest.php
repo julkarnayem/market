@@ -63,6 +63,50 @@ class InertiaMigrationTest extends TestCase
     {
         $this->get('/')->assertOk();
         $this->get('/marketplace')->assertOk();
-        $this->get('/contact')->assertOk();
+    }
+
+    public function test_contact_renders_the_inertia_page(): void
+    {
+        $this->get('/contact')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->component('Contact'));
+    }
+
+    /** Contact.vue reads form.errors.* to render field messages. */
+    public function test_contact_submit_returns_validation_errors_for_an_empty_form(): void
+    {
+        $this->from('/contact')
+            ->post('/contact', ['name' => '', 'email' => '', 'message' => ''])
+            ->assertRedirect('/contact')
+            ->assertSessionHasErrors(['name', 'email', 'message']);
+    }
+
+    public function test_contact_submit_rejects_a_malformed_email(): void
+    {
+        $this->from('/contact')
+            ->post('/contact', ['name' => 'Ada', 'email' => 'not-an-email', 'message' => 'Hello'])
+            ->assertRedirect('/contact')
+            ->assertSessionHasErrors('email');
+    }
+
+    /** PublicLayout renders the shared flash prop, so the success path must set it. */
+    public function test_contact_submit_flashes_success_and_the_flash_reaches_inertia(): void
+    {
+        $this->from('/contact')
+            ->post('/contact', [
+                'name'    => 'Ada Lovelace',
+                'email'   => 'ada@example.com',
+                'message' => 'Question about seller verification.',
+            ])
+            ->assertRedirect('/contact')
+            ->assertSessionHas('success');
+
+        // Follow the redirect: the flash must arrive as an Inertia prop.
+        $this->get('/contact')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Contact')
+                ->has('flash.success')
+            );
     }
 }
