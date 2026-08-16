@@ -1,6 +1,8 @@
 <?php
 namespace Tests\Feature;
 
+use App\Models\Asset;
+use App\Models\Category;
 use App\Models\User;
 use Inertia\Testing\AssertableInertia as Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -59,11 +61,13 @@ class InertiaMigrationTest extends TestCase
             );
     }
 
-    /** Coexistence guard: these are still Blade and must not 500. */
+    /** Coexistence guard: /marketplace is still Blade and must not 500 or gain an Inertia payload. */
     public function test_unmigrated_blade_pages_still_render(): void
     {
-        $this->get('/')->assertOk();
-        $this->get('/marketplace')->assertOk();
+        // / and /contact are Inertia now; /marketplace is the remaining public Blade page.
+        $this->get('/marketplace')
+            ->assertOk()
+            ->assertDontSee('data-page', false);
     }
 
     public function test_contact_renders_the_inertia_page(): void
@@ -141,5 +145,89 @@ class InertiaMigrationTest extends TestCase
     public function test_an_unknown_legal_slug_404s(): void
     {
         $this->get('/legal/not-a-real-policy')->assertNotFound();
+    }
+
+    /**
+     * Category is created with create() rather than a factory on purpose:
+     * Category has no factory (a pre-existing gap), and AssetFactory falls back
+     * to Category::first(), so this keeps the migration tests independent of it.
+     */
+    private function seedOneAsset(): array
+    {
+        $category = Category::create([
+            'name'      => 'Social Pages',
+            'slug'      => 'social-pages',
+            'icon'      => '📣',
+            'is_active' => true,
+            'position'  => 1,
+        ]);
+
+        $asset = Asset::factory()->create([
+            'category_id' => $category->id,
+            'title'       => 'Established Cooking Page',
+            'price'       => 250000, // poisha -> ৳2,500.00
+        ]);
+
+        return [$category, $asset];
+    }
+
+    public function test_home_renders_the_inertia_page_with_mapped_props(): void
+    {
+        $this->seedOneAsset();
+
+        $this->get('/')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Home')
+                ->has('categories', 1)
+                ->has('categories.0', fn (Assert $c) => $c
+                    ->where('slug', 'social-pages')
+                    ->where('name', 'Social Pages')
+                    ->where('icon', '📣')
+                    ->where('children_count', 0)
+                )
+                ->has('latestAssets', 1)
+                ->has('featuredAssets', 0)
+                ->has('latestAssets.0', fn (Assert $a) => $a
+                    ->where('title', 'Established Cooking Page')
+                    // Money::format owns currency rendering; the client must not re-derive it.
+                    ->where('price_formatted', '৳2,500.00')
+                    ->where('is_sold_out', false)
+                    ->where('is_featured', false)
+                    ->etc()
+                )
+            );
+    }
+
+    /** The asset payload is a whitelist — extra columns must not reach the client. */
+    public function test_home_asset_payload_does_not_leak_model_columns(): void
+    {
+        $this->seedOneAsset();
+
+        $this->get('/')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->has('latestAssets.0', fn (Assert $a) => $a
+                    ->missing('description')
+                    ->missing('user_id')
+                    ->missing('status')
+                    ->missing('views_count')
+                    ->missing('sold_quantity')
+                    ->missing('created_at')
+                    ->etc()
+                )
+            );
+    }
+
+    public function test_home_renders_with_no_categories_or_assets(): void
+    {
+        $this->get('/')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Home')
+                ->has('categories', 0)
+                ->has('featuredAssets', 0)
+                ->has('latestAssets', 0)
+            );
     }
 }

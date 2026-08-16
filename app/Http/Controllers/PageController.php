@@ -3,6 +3,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Asset;
 use App\Models\Category;
+use App\Support\Money;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 
@@ -14,7 +15,58 @@ class PageController extends Controller
         $featuredAssets= Asset::published()->featuredNow()->with(['coverImage','seller','category'])->limit(8)->get();
         $latestAssets  = Asset::published()->with(['coverImage','seller','category'])->latest()->limit(8)->get();
 
-        return view('pages.home', compact('categories','featuredAssets','latestAssets'));
+        return Inertia::render('Home', [
+            'categories'     => $categories->map(self::mapCategory())->all(),
+            'featuredAssets' => $featuredAssets->map(self::mapAsset())->all(),
+            'latestAssets'   => $latestAssets->map(self::mapAsset())->all(),
+        ]);
+    }
+
+    /**
+     * Category -> CategoryCard props (see resources/js/types/index.d.ts).
+     */
+    private static function mapCategory(): callable
+    {
+        return fn (Category $category): array => [
+            'slug'           => $category->slug,
+            'name'           => $category->name,
+            'icon'           => $category->icon,
+            'children_count' => (int) ($category->children_count ?? 0),
+        ];
+    }
+
+    /**
+     * Asset -> AssetCard props. An explicit whitelist, mirroring the discipline in
+     * HandleInertiaRequests::shareUser: the client gets only what a card renders,
+     * so extra columns can never leak and the payload stays small.
+     *
+     * Prices are formatted here because they are stored as integer poisha and
+     * App\Support\Money owns that formatting — never re-derive currency client-side.
+     */
+    private static function mapAsset(): callable
+    {
+        return fn (Asset $asset): array => [
+            'id'                 => $asset->id,
+            'slug'               => $asset->slug,
+            'title'              => $asset->title,
+            'price_formatted'    => Money::format((int) $asset->price),
+            'quantity'           => (int) $asset->quantity,
+            'available_quantity' => (int) $asset->available_quantity,
+            'is_sold_out'        => $asset->isSoldOut(),
+            'is_featured'        => $asset->isFeaturedNow(),
+            'cover_image_url'    => $asset->coverImage?->url(),
+            'category'           => [
+                'name' => $asset->category?->name ?? 'Uncategorised',
+                'icon' => $asset->category?->icon,
+            ],
+            'seller'             => [
+                'name'               => $asset->seller?->name ?? 'Unknown seller',
+                'is_verified_seller' => (bool) $asset->seller?->isVerifiedSeller(),
+                'profile_url'        => $asset->seller
+                    ? route('profile.show', $asset->seller->username ?? $asset->seller->id)
+                    : route('marketplace.index'),
+            ],
+        ];
     }
 
     public function legal(string $slug)

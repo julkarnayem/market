@@ -27,6 +27,40 @@ export interface Flash {
     status: string | null;
 }
 
+/** A category as mapped by PageController::mapCategory(). */
+export interface Category {
+    slug: string;
+    name: string;
+    icon: string | null;
+    children_count: number;
+}
+
+/** An asset card's payload, as mapped by PageController::mapAsset().
+ *  Deliberately a whitelist — the Asset model has many more columns, and the
+ *  client only needs what a card renders. Prices arrive pre-formatted because
+ *  they are stored as integer poisha and App\Support\Money owns the
+ *  formatting; never re-derive currency on the client. */
+export interface AssetCardData {
+    id: number;
+    slug: string;
+    title: string;
+    price_formatted: string;
+    quantity: number;
+    available_quantity: number;
+    is_sold_out: boolean;
+    is_featured: boolean;
+    cover_image_url: string | null;
+    category: {
+        name: string;
+        icon: string | null;
+    };
+    seller: {
+        name: string;
+        is_verified_seller: boolean;
+        profile_url: string;
+    };
+}
+
 /** Props shared with every Inertia response (see HandleInertiaRequests::share). */
 export interface SharedProps {
     appName: string;
