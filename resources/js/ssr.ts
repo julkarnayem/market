@@ -20,11 +20,18 @@ createServer((page) =>
         setup({ App, props, plugin }) {
             const app = createSSRApp({ render: () => h(App, props) });
             app.use(plugin);
-            // Ziggy for SSR: config is shared from the server via HandleInertiaRequests
-            const ziggy = page.props.ziggy as { location: string } & Record<string, unknown>;
+            // Ziggy for SSR: config is shared from the server via HandleInertiaRequests.
+            // There is no window.location here, so pass the request URL explicitly —
+            // Ziggy v2 wants location as {host, pathname, search}, not a string.
+            const ziggy = page.props.ziggy;
+            const url = new URL(ziggy.location);
             app.use(ZiggyVue, {
                 ...ziggy,
-                location: new URL(ziggy.location),
+                location: {
+                    host: url.host,
+                    pathname: url.pathname,
+                    search: url.search,
+                },
             });
             return app;
         },

@@ -3,7 +3,35 @@
 @tailwind utilities;
 
 @layer base {
-    :root { color-scheme: light; }
+    /* shadcn-vue design tokens (baseColor: slate, per components.json).
+       Additive — the brand/mint palettes in tailwind.config.js and the
+       component classes below remain the primary design system. These only
+       exist so `npx shadcn-vue add <component>` output renders correctly. */
+    :root {
+        color-scheme: light;
+
+        --background: 0 0% 100%;
+        --foreground: 222.2 84% 4.9%;
+        --card: 0 0% 100%;
+        --card-foreground: 222.2 84% 4.9%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 222.2 84% 4.9%;
+        /* Primary tracks the emerald brand (--brand #10B981 = 160 84% 39%). */
+        --primary: 160 84% 39%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 210 40% 96.1%;
+        --secondary-foreground: 222.2 47.4% 11.2%;
+        --muted: 210 40% 96.1%;
+        --muted-foreground: 215.4 16.3% 46.9%;
+        --accent: 210 40% 96.1%;
+        --accent-foreground: 222.2 47.4% 11.2%;
+        --destructive: 0 72.2% 50.6%;
+        --destructive-foreground: 210 40% 98%;
+        --border: 214.3 31.8% 91.4%;
+        --input: 214.3 31.8% 91.4%;
+        --ring: 160 84% 39%;
+        --radius: 0.5rem;
+    }
     html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
     body { @apply bg-slate-50 text-slate-800 font-sans antialiased; }
     h1,h2,h3,h4 { @apply font-display; }

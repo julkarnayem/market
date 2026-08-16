@@ -7,8 +7,12 @@ return new class extends Migration {
         Schema::table('audit_logs', function (Blueprint $table) {
             $table->string('module')->nullable()->index()->after('action');
             $table->text('reason')->nullable()->after('new_values');
-            $table->index(['auditable_type','auditable_id']);
-            $table->index('module');
+            // No explicit index() calls here: nullableMorphs('auditable') in
+            // 001600_create_audit_logs_table already creates
+            // audit_logs_auditable_type_auditable_id_index, and ->index() above
+            // already indexes `module`. Re-declaring them aborts the migration
+            // with "index already exists" on a fresh database (e.g. the sqlite
+            // in-memory database the test suite uses).
         });
     }
     public function down(): void {

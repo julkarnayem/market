@@ -34,7 +34,10 @@ export interface SharedProps {
         user: User | null;
     };
     flash: Flash;
-    ziggy: ZiggyConfig & { location: string };
+    /** HandleInertiaRequests shares `location` as an absolute URL string, whereas
+     *  Ziggy's own Config types it as {host, pathname, search} — so override it
+     *  rather than intersect, which would produce an impossible type. */
+    ziggy: Omit<ZiggyConfig, 'location'> & { location: string };
     [key: string]: unknown;
 }
 

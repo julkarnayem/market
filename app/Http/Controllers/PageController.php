@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 use App\Models\Asset;
 use App\Models\Category;
 use Illuminate\Http\Request;
+use Inertia\Inertia;
 
 class PageController extends Controller
 {
@@ -30,7 +31,42 @@ class PageController extends Controller
         return back()->with('success', 'Thank you - your message has been received.');
     }
 
-    public function faq() { return view('pages.faq'); }
+    public function faq()
+    {
+        return Inertia::render('Faq', ['faqs' => self::faqs()]);
+    }
+
+    /**
+     * FAQ content. Server-owned like self::pages() below, so copy edits stay
+     * in PHP rather than in the compiled Vue bundle.
+     *
+     * @return list<array{question: string, answer: string}>
+     */
+    private static function faqs(): array
+    {
+        return [
+            [
+                'question' => 'Is there a fee to list an asset?',
+                'answer'   => 'No. Creating a listing is completely free. Sellers pay a flat 10% platform fee only when an asset sells.',
+            ],
+            [
+                'question' => 'How does buyer protection work?',
+                'answer'   => 'After payment, funds are held and you have 72 hours to confirm delivery. If you do nothing, the order auto-completes.',
+            ],
+            [
+                'question' => 'When can a seller withdraw earnings?',
+                'answer'   => 'Earnings unlock 8 hours after an order is completed. The minimum withdrawal is ৳50 with a ৳5 fee, paid via Mobile Financial Services.',
+            ],
+            [
+                'question' => 'Can I cancel after paying?',
+                'answer'   => 'No. Once payment succeeds, orders cannot be cancelled by the buyer. Issues are handled through disputes.',
+            ],
+            [
+                'question' => 'Do I need verification to buy?',
+                'answer'   => 'No. Anyone can buy. Verification is only required to sell.',
+            ],
+        ];
+    }
 
     private static function pages(): array
     {
