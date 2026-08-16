@@ -3,12 +3,16 @@ namespace App\Http\Controllers;
 
 use App\Enums\AssetStatus;
 use App\Enums\OrderStatus;
+use App\Http\Controllers\Concerns\MapsMarketplaceProps;
 use App\Models\Category;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Inertia\Inertia;
 
 class ProfileController extends Controller
 {
+    use MapsMarketplaceProps;
+
     public function show(string $identifier, Request $request)
     {
         $user = User::where('username', $identifier)
@@ -66,9 +70,43 @@ class ProfileController extends Controller
 
         $isOwnProfile = auth()->check() && auth()->id() === $user->id;
 
-        return view('profile.show', compact(
-            'user','tab','stats','listings',
-            'completedSales','completedPurchases','reviews','isOwnProfile'
-        ));
+        // The three asset-backed tabs share one prop, since only the active tab
+        // is ever queried; sales/purchases map their order through to its asset.
+        $assets = match ($tab) {
+            'listings'  => $listings->through(self::mapAsset()),
+            'sales'     => $completedSales
+                ->setCollection($completedSales->getCollection()->filter(fn ($o) => $o->asset !== null)->values())
+                ->through(fn ($order) => self::mapAsset()($order->asset)),
+            'purchases' => $completedPurchases
+                ->setCollection($completedPurchases->getCollection()->filter(fn ($o) => $o->asset !== null)->values())
+                ->through(fn ($order) => self::mapAsset()($order->asset)),
+            default     => null,
+        };
+
+        return Inertia::render('Profile/Show', [
+            'profile' => [
+                'name'               => $user->name,
+                'initial'            => strtoupper(mb_substr($user->name, 0, 1)),
+                'is_verified_seller' => $user->isVerifiedSeller(),
+                'has_phone'          => (bool) $user->phone,
+                'member_since'       => $user->created_at?->format('Y-m'),
+                'profile_url'        => route('profile.show', $user->username ?? $user->id),
+            ],
+            'stats'        => $stats,
+            'tab'          => $tab,
+            'assets'       => $assets,
+            'reviews'      => $tab === 'reviews'
+                ? $reviews->through(fn ($review) => [
+                    'id'              => $review->id,
+                    'reviewer_name'   => $review->reviewer?->name ?? 'Deleted user',
+                    'reviewer_initial'=> strtoupper(mb_substr($review->reviewer?->name ?? '?', 0, 1)),
+                    'rating'          => (int) $review->rating,
+                    'comment'         => $review->comment,
+                    'created_at'      => $review->created_at?->format('d M Y'),
+                    'asset_title'     => $review->asset?->title,
+                ])
+                : null,
+            'isOwnProfile' => $isOwnProfile,
+        ]);
     }
 }

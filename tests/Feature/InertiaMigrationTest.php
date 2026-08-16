@@ -355,4 +355,43 @@ class InertiaMigrationTest extends TestCase
     {
         $this->get('/asset/no-such-asset')->assertNotFound();
     }
+
+    public function test_profile_show_renders_the_listings_tab_by_default(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+        $seller = $asset->seller;
+
+        $this->get('/users/'.($seller->username ?? $seller->id))
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Profile/Show')
+                ->where('profile.name', $seller->name)
+                ->where('tab', 'listings')
+                ->has('assets.data', 1)
+                ->where('assets.data.0.slug', $asset->slug)
+                ->where('reviews', null)
+                ->where('isOwnProfile', false)
+                ->has('stats.listed')
+            );
+    }
+
+    public function test_profile_show_switches_to_the_reviews_tab(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+        $seller = $asset->seller;
+
+        $this->get('/users/'.($seller->username ?? $seller->id).'?tab=reviews')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('tab', 'reviews')
+                // Only the active tab is queried, so the asset prop stays null.
+                ->where('assets', null)
+                ->has('reviews.data', 0)
+            );
+    }
+
+    public function test_profile_show_404s_for_an_unknown_user(): void
+    {
+        $this->get('/users/nobody-here')->assertNotFound();
+    }
 }
