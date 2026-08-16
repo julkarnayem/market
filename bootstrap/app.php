@@ -4,6 +4,7 @@ use App\Http\Middleware\DenyFraming;
 use App\Http\Middleware\EnsureAdmin;
 use App\Http\Middleware\EnsureUserCanSell;
 use App\Http\Middleware\EnsureUserIsActive;
+use App\Http\Middleware\HandleInertiaRequests;
 use App\Http\Middleware\NoIndex;
 use App\Http\Middleware\SetSecurityHeaders;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -22,6 +23,11 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware) {
         // Global web middleware — security headers on every response
         $middleware->web(append: [SetSecurityHeaders::class]);
+
+        // Inertia: shares props (auth user, flash, Ziggy routes) and handles
+        // version/redirect negotiation. Appended to the web group so it runs
+        // after session + CSRF, which share() depends on.
+        $middleware->web(append: [HandleInertiaRequests::class]);
 
         // Route aliases
         $middleware->alias([
