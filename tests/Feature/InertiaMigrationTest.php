@@ -3,6 +3,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use Inertia\Testing\AssertableInertia as Assert;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -108,5 +109,37 @@ class InertiaMigrationTest extends TestCase
                 ->component('Contact')
                 ->has('flash.success')
             );
+    }
+
+    public static function legalSlugs(): array
+    {
+        return [
+            ['terms', 'Terms of Service'],
+            ['privacy', 'Privacy Policy'],
+            ['buyer-protection', 'Buyer Protection'],
+            ['seller-policy', 'Seller Policy'],
+            ['refund-policy', 'Refund Policy'],
+            ['dispute-policy', 'Dispute Policy'],
+            ['prohibited-assets', 'Prohibited Assets'],
+        ];
+    }
+
+    #[DataProvider('legalSlugs')]
+    public function test_every_legal_page_renders_the_inertia_component(string $slug, string $title): void
+    {
+        $this->get("/legal/{$slug}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Legal')
+                ->where('page.slug', $slug)
+                ->where('page.title', $title)
+                ->has('page.body')
+                ->has('lastUpdated')
+            );
+    }
+
+    public function test_an_unknown_legal_slug_404s(): void
+    {
+        $this->get('/legal/not-a-real-policy')->assertNotFound();
     }
 }

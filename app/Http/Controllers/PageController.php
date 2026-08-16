@@ -19,8 +19,15 @@ class PageController extends Controller
 
     public function legal(string $slug)
     {
-        abort_unless(array_key_exists($slug, self::pages()), 404);
-        return view('legal.show', ['page' => self::pages()[$slug]]);
+        $pages = self::pages();
+        abort_unless(array_key_exists($slug, $pages), 404);
+
+        return Inertia::render('Legal', [
+            'page' => [...$pages[$slug], 'slug' => $slug],
+            // Formatted server-side so the date matches the app timezone
+            // rather than the visitor's clock.
+            'lastUpdated' => now()->format('F Y'),
+        ]);
     }
 
     public function contact()

@@ -1,4 +1,5 @@
 import forms from '@tailwindcss/forms';
+import typography from '@tailwindcss/typography';
 import animate from 'tailwindcss-animate';
 import defaultTheme from 'tailwindcss/defaultTheme';
 
@@ -93,5 +94,7 @@ export default {
             },
         },
     },
-    plugins: [forms, animate],
+    // typography backs the `prose` classes used by Pages/Legal.vue to render the
+    // server-owned HTML bodies from PageController::pages().
+    plugins: [forms, typography, animate],
 };
