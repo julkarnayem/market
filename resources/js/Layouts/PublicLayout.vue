@@ -39,7 +39,10 @@ const navLinks = [
 </script>
 
 <template>
-    <div class="flex min-h-full flex-col">
+    <!-- min-h-screen, not min-h-full: `min-height:100%` resolves against <body>,
+         whose height is auto, so it collapses to the content height and the
+         footer stops sticking to the bottom on short pages. -->
+    <div class="flex min-h-screen flex-col">
         <header class="sticky top-0 z-40 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
             <div class="mx-auto max-w-7xl px-3 sm:px-4 lg:px-4">
                 <div class="flex h-16 items-center gap-3">
