@@ -256,10 +256,71 @@ class MarketplaceController extends Controller
             ],
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-        $structuredData = '<script type="application/ld+json">'.PHP_EOL.$structuredDataJson.PHP_EOL.'</script>';
         $ogImage = $asset->coverImage?->url();
         $description = Str::limit(strip_tags($asset->description ?? ''), 155);
 
-        return view('marketplace.show', compact('asset', 'related', 'isFavorited', 'userActiveOffer'));
+        return Inertia::render('Marketplace/Show', [
+            'asset' => [
+                'id'                 => $asset->id,
+                'slug'               => $asset->slug,
+                'title'              => $asset->title,
+                'description'        => $asset->description,
+                'price_formatted'    => Money::format((int) $asset->price),
+                'quantity'           => (int) $asset->quantity,
+                'available_quantity' => (int) $asset->available_quantity,
+                'is_sold_out'        => $asset->isSoldOut(),
+                'is_featured'        => $asset->isFeaturedNow(),
+                'is_purchasable'     => $asset->isAvailableForPurchase(),
+                'views_count'        => (int) $asset->views_count,
+                'favorites_count'    => (int) $asset->favorites_count,
+                'listed_on'          => $asset->created_at?->format('d M Y'),
+                'images'             => $asset->images->map(fn ($image) => ['url' => $image->url()])->values()->all(),
+                'category'           => [
+                    'name'   => $asset->category?->name,
+                    'slug'   => $asset->category?->slug,
+                    'icon'   => $asset->category?->icon,
+                    'parent' => $asset->category?->parent ? [
+                        'name' => $asset->category->parent->name,
+                        'slug' => $asset->category->parent->slug,
+                    ] : null,
+                ],
+                'seller'             => [
+                    'name'               => $asset->seller?->name,
+                    'initial'            => strtoupper(mb_substr($asset->seller?->name ?? '?', 0, 1)),
+                    'is_verified_seller' => (bool) $asset->seller?->isVerifiedSeller(),
+                    'member_since'       => $asset->seller?->created_at?->format('M Y'),
+                    'bio'                => $asset->seller?->bio ? Str::limit($asset->seller->bio, 100) : null,
+                    'profile_url'        => $asset->seller
+                        ? route('profile.show', $asset->seller->username ?? $asset->seller->id)
+                        : null,
+                ],
+                // URLs resolved server-side so the client never needs the owner's id.
+                'checkout_url'       => route('checkout.show', $asset->slug),
+                'offer_url'          => route('offers.create', ['asset' => $asset->slug]),
+                'attributes'         => $asset->attributeValues->map(fn ($value) => [
+                    'label' => $value->attribute?->label,
+                    'value' => $value->value,
+                    'unit'  => $value->attribute?->unit,
+                ])->filter(fn ($row) => $row['label'] !== null)->values()->all(),
+            ],
+            'related'      => $related->map(self::mapAsset())->values()->all(),
+            'isFavorited'  => $isFavorited,
+            // Whether the viewer owns this listing — decided on the server, never
+            // inferred client-side from an id comparison.
+            'canManage'    => auth()->check() && auth()->id() === $asset->user_id,
+            'manageUrl'    => auth()->check() && auth()->id() === $asset->user_id
+                ? route('dashboard.listings.show', $asset)
+                : null,
+            'activeOffer'  => $userActiveOffer ? [
+                'amount_formatted'  => Money::format((int) $userActiveOffer->amount),
+                'expires_in_seconds' => $userActiveOffer->timeRemainingSeconds(),
+            ] : null,
+            'seo'          => [
+                'description' => $description,
+                'canonical'   => route('marketplace.show', $asset->slug),
+                'ogImage'     => $ogImage,
+                'jsonLd'      => $structuredDataJson,
+            ],
+        ]);
     }
 }

@@ -315,4 +315,44 @@ class InertiaMigrationTest extends TestCase
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page->where('assets.data.0.is_favorited', true));
     }
+
+    public function test_asset_show_renders_the_inertia_page(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+
+        $this->get("/asset/{$asset->slug}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Marketplace/Show')
+                ->where('asset.slug', $asset->slug)
+                ->where('asset.title', 'Established Cooking Page')
+                ->where('asset.price_formatted', '৳2,500.00')
+                ->where('asset.is_purchasable', true)
+                ->where('isFavorited', false)
+                // Ownership is decided server-side, never inferred from an id on the client.
+                ->where('canManage', false)
+                ->where('manageUrl', null)
+                ->where('activeOffer', null)
+                ->has('asset.images')
+                ->has('seo.canonical')
+            );
+    }
+
+    public function test_asset_show_marks_the_owner_as_able_to_manage(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+
+        $this->actingAs($asset->seller)
+            ->get("/asset/{$asset->slug}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('canManage', true)
+                ->has('manageUrl')
+            );
+    }
+
+    public function test_asset_show_404s_for_an_unknown_slug(): void
+    {
+        $this->get('/asset/no-such-asset')->assertNotFound();
+    }
 }
