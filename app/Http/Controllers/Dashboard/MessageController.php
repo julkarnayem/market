@@ -9,6 +9,8 @@ use App\Services\MessageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Inertia\Inertia;
 
 class MessageController extends Controller
 {
@@ -18,56 +20,83 @@ class MessageController extends Controller
     {
         $user = Auth::user();
 
-        // Get all conversations this user participates in
-        $conversations = Conversation::whereHas('participants', fn($q) => $q->where('users.id', $user->id))
+        // Conversations this user participates in, newest activity first. Only
+        // the *other* participant is eager-loaded (the list shows their name).
+        $conversations = Conversation::whereHas('participants', fn ($q) => $q->where('users.id', $user->id))
             ->with([
-                'order.asset.coverImage',
-                'participants' => fn($q) => $q->where('users.id', '!=', $user->id)->limit(1),
+                'order.asset',
+                'participants' => fn ($q) => $q->where('users.id', '!=', $user->id)->limit(1),
             ])
             ->orderByDesc('last_message_at')
-            ->paginate(30);
+            ->paginate(30)
+            ->withQueryString();
 
-        // Compute per-conversation unread counts efficiently
-        $unreadMap = [];
-        foreach ($conversations as $conv) {
-            $lastRead = $conv->participants()
-                ->where('conversation_participants.conversation_id', $conv->id)
-                ->where('users.id', $user->id)
-                ->value('last_read_at');
-            $q = Message::where('conversation_id', $conv->id)->where('sender_user_id', '!=', $user->id);
-            if ($lastRead) $q->where('created_at', '>', $lastRead);
-            $unreadMap[$conv->id] = $q->count();
-        }
-
-        $selectedConversation = null;
-        $messages             = collect();
+        $selectedId         = null;
+        $activeConversation = null;
+        $messages           = [];
 
         if ($convId = request('conversation')) {
-            $selectedConversation = Conversation::whereHas('participants', fn($q) => $q->where('users.id', $user->id))
-                ->with(['order.asset','order.seller','order.buyer','participants'])
+            $selected = Conversation::whereHas('participants', fn ($q) => $q->where('users.id', $user->id))
+                ->with(['order.asset', 'participants'])
                 ->findOrFail($convId);
 
-            // Mark read
-            $this->service->markRead($selectedConversation, $user);
-            $unreadMap[$convId] = 0;
+            $this->service->markRead($selected, $user);
+            $selectedId = $selected->id;
 
-            // Load recent 50 messages (cursor pagination approach)
-            $messages = $selectedConversation->activeMessages()
-                ->with('sender','replyTo.sender')
-                ->latest()
-                ->limit(50)
-                ->get()
-                ->reverse()
-                ->values();
+            $other = $selected->participants->firstWhere('id', '!=', $user->id);
+            $order = $selected->order;
+
+            $activeConversation = [
+                'id'            => $selected->id,
+                'other_name'    => $other?->name ?? 'Unknown',
+                'other_initial' => mb_strtoupper(mb_substr($other?->name ?? '?', 0, 1)),
+                'order_number'  => $order?->order_number,
+                'asset_title'   => $order?->asset?->title ?? '',
+                'order_status'  => $order?->status?->value ?? 'unknown',
+                'order_url'     => $order ? route('dashboard.orders.show', $order) : null,
+            ];
+
+            // Latest 50, oldest-first for chronological display. activeMessages()
+            // already excludes soft-deleted rows, so there is no "deleted" state.
+            $messages = $selected->activeMessages()
+                ->with('sender', 'replyTo.sender')
+                ->latest()->limit(50)->get()
+                ->reverse()->values()
+                ->map(fn (Message $m) => [
+                    'id'             => $m->id,
+                    'mine'           => $m->sender_user_id === $user->id,
+                    'is_system'      => (bool) $m->is_system,
+                    'sender_name'    => $m->sender?->name ?? 'Unknown',
+                    'sender_initial' => mb_strtoupper(mb_substr($m->sender?->name ?? '?', 0, 1)),
+                    'body'           => $m->body ?? '',
+                    'time'           => $m->created_at->format('H:i'),
+                    'attachment'     => $m->hasAttachment()
+                        ? ['name' => $m->attachment_name ?? 'Attachment', 'url' => route('messages.attachment', $m)]
+                        : null,
+                    'reply_to'       => $m->replyTo
+                        ? ['sender_name' => $m->replyTo->sender?->name ?? 'Unknown', 'excerpt' => Str::limit($m->replyTo->body ?? '', 80)]
+                        : null,
+                ]);
         }
 
-        $totalUnread     = collect($unreadMap)->sum();
-        $broadcastDriver = config('broadcasting.default','null');
-        $isRealtimeReady = $broadcastDriver !== 'null';
-
-        return view('dashboard.messages', compact(
-            'conversations','selectedConversation','messages','unreadMap','totalUnread','isRealtimeReady'
-        ));
+        return Inertia::render('Dashboard/Messages/Index', [
+            'conversations' => $conversations->through(fn (Conversation $c) => [
+                'id'                 => $c->id,
+                'other_name'         => $c->participants->first()?->name ?? 'Unknown',
+                'other_initial'      => mb_strtoupper(mb_substr($c->participants->first()?->name ?? '?', 0, 1)),
+                'subtitle'           => $c->order?->asset?->title ?? ('Order #'.$c->order_id),
+                'order_status'       => $c->order?->status?->value,
+                'order_status_label' => $c->order?->status
+                    ? ucwords(str_replace('_', ' ', $c->order->status->value))
+                    : '',
+                'unread'             => $c->unreadCountFor($user->id),
+                'last_human'         => $c->last_message_at?->diffForHumans(null, true),
+            ]),
+            'selectedId'         => $selectedId,
+            'activeConversation' => $activeConversation,
+            'messages'           => $messages,
+            'isRealtimeReady'    => config('broadcasting.default', 'null') !== 'null',
+        ]);
     }
 
     /** POST /messages/{conversation}/send */
@@ -91,7 +120,9 @@ class MessageController extends Controller
             $data['reply_to_id'] ?? null,
         );
 
-        if ($request->expectsJson()) {
+        // A bare JSON client (none today) still gets JSON; an Inertia POST must
+        // fall through to back() so the router follows the redirect and reloads.
+        if ($request->expectsJson() && ! $request->header('X-Inertia')) {
             return response()->json([
                 'id'         => $msg->id,
                 'body'       => $msg->safeBody(),

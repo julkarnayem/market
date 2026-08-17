@@ -5,8 +5,10 @@ use App\Enums\TicketStatus;
 use App\Models\Asset;
 use App\Models\Category;
 use App\Models\CategoryAttribute;
+use App\Models\Conversation;
 use App\Models\Favorite;
 use App\Models\PhoneOtp;
+use App\Models\Role;
 use App\Models\SupportTicket;
 use App\Models\User;
 use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
@@ -71,17 +73,24 @@ class InertiaMigrationTest extends TestCase
 
     /**
      * Coexistence guard: Blade and Inertia must keep working side by side.
-     * Repoint this at a still-Blade page each time its target migrates —
+     * Every user-facing dashboard page is Inertia now, so this points at the
+     * still-Blade admin area (audit logs); repoint it as admin pages migrate.
      * /marketplace, /dashboard, /dashboard/favorites, /dashboard/wallet,
-     * /dashboard/promotions, /dashboard/notifications and /dashboard/tickets
-     * have all already passed through here.
+     * /dashboard/promotions, /dashboard/notifications, /dashboard/tickets and
+     * /dashboard/messages have all already passed through here.
      */
     public function test_unmigrated_blade_pages_still_render(): void
     {
-        $user = User::factory()->create();
+        $admin = User::factory()->create();
+        $role  = Role::create([
+            'name'          => 'ckpt22-admin-guard',
+            'display_name'  => 'Administrator',
+            'is_admin_role' => true,
+        ]);
+        $admin->roles()->attach($role->id);
 
-        $this->actingAs($user)
-            ->get('/dashboard/messages')
+        $this->actingAs($admin)
+            ->get('/admin/audit-logs')
             ->assertOk()
             ->assertDontSee('data-page', false);
     }
@@ -937,6 +946,117 @@ class InertiaMigrationTest extends TestCase
             ->assertForbidden();
     }
 
+    // ── Dashboard messages (checkpoint 22) ──────────────────────────────
+
+    /** A two-party order conversation with one inbound message from $other. */
+    private function seedConversation(User $me, User $other): Conversation
+    {
+        $conversation = Conversation::create([
+            'type'            => 'order',
+            'last_message_at' => now(),
+        ]);
+        $conversation->participants()->attach([$me->id, $other->id]);
+        $conversation->activeMessages()->create([
+            'sender_user_id' => $other->id,
+            'body'           => 'Hi, thanks for your order!',
+        ]);
+
+        return $conversation;
+    }
+
+    /**
+     * The list whitelists each conversation to the *other* participant plus an
+     * unread count; with no ?conversation the thread props stay empty.
+     */
+    public function test_dashboard_messages_renders_the_conversation_list(): void
+    {
+        $me    = User::factory()->create();
+        $other = User::factory()->create(['name' => 'Rifat Seller']);
+        $this->seedConversation($me, $other);
+
+        $this->actingAs($me)
+            ->get('/dashboard/messages')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Messages/Index')
+                ->where('selectedId', null)
+                ->where('activeConversation', null)
+                ->has('messages', 0)
+                ->has('conversations.data', 1)
+                ->has('conversations.data.0', fn (Assert $c) => $c
+                    ->where('other_name', 'Rifat Seller')
+                    ->where('other_initial', 'R')
+                    ->where('unread', 1)
+                    ->has('subtitle')
+                    ->has('id')
+                    ->etc()
+                )
+            );
+    }
+
+    /**
+     * Opening ?conversation={id} maps the thread oldest-first; the acting user's
+     * own view marks the inbound message as not "mine", and an order-less
+     * conversation reports an "unknown" status with no order link.
+     */
+    public function test_dashboard_messages_opens_a_conversation_thread(): void
+    {
+        $me    = User::factory()->create();
+        $other = User::factory()->create(['name' => 'Rifat Seller']);
+        $conversation = $this->seedConversation($me, $other);
+
+        $this->actingAs($me)
+            ->get('/dashboard/messages?conversation='.$conversation->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Messages/Index')
+                ->where('selectedId', $conversation->id)
+                ->has('activeConversation', fn (Assert $c) => $c
+                    ->where('other_name', 'Rifat Seller')
+                    ->where('order_status', 'unknown')
+                    ->where('order_url', null)
+                    ->etc()
+                )
+                ->has('messages', 1)
+                ->has('messages.0', fn (Assert $m) => $m
+                    ->where('mine', false)
+                    ->where('is_system', false)
+                    ->where('body', 'Hi, thanks for your order!')
+                    ->where('attachment', null)
+                    ->where('reply_to', null)
+                    ->has('time')
+                    ->has('sender_initial')
+                    ->etc()
+                )
+            );
+    }
+
+    /**
+     * An Inertia POST carries no Accept: application/json, so send() must fall
+     * through to back() (a redirect the router follows) and persist the message
+     * rather than returning the bare-JSON branch.
+     */
+    public function test_dashboard_messages_send_persists_and_redirects(): void
+    {
+        $me    = User::factory()->create();
+        $other = User::factory()->create();
+        $conversation = $this->seedConversation($me, $other);
+
+        $this->actingAs($me)
+            ->from('/dashboard/messages?conversation='.$conversation->id)
+            ->post('/dashboard/messages/'.$conversation->id.'/send', [
+                'body'              => 'On my way with the details.',
+                'client_message_id' => 'ckpt22-uuid-1',
+            ])
+            ->assertRedirect();
+
+        $this->assertDatabaseHas('messages', [
+            'conversation_id' => $conversation->id,
+            'sender_user_id'  => $me->id,
+            'body'            => 'On my way with the details.',
+        ]);
+    }
+
     #[DataProvider('dashboardRouteProvider')]
     public function test_dashboard_pages_require_authentication(string $path): void
     {
@@ -952,6 +1072,7 @@ class InertiaMigrationTest extends TestCase
             'notifications' => ['/dashboard/notifications'],
             'tickets' => ['/dashboard/tickets'],
             'tickets-create' => ['/dashboard/tickets/create'],
+            'messages' => ['/dashboard/messages'],
         ];
     }
 }
