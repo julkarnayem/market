@@ -166,6 +166,28 @@ class InertiaMigrationTest extends TestCase
             );
     }
 
+    /**
+     * Admin/Withdrawals/Index.vue reads a whitelisted `withdrawals` paginator,
+     * the echoed `filters` (status defaults to 'pending') and a `statuses` list.
+     */
+    public function test_admin_withdrawals_index_renders_the_filterable_list(): void
+    {
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/withdrawals?status=rejected&q=jane')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Withdrawals/Index')
+                ->has('withdrawals.data')
+                ->where('filters.status', 'rejected')
+                ->where('filters.q', 'jane')
+                ->has('statuses', 5)
+                ->has('statuses.0', fn (Assert $s) => $s
+                    ->where('value', 'pending')
+                    ->where('label', 'Pending')
+                )
+            );
+    }
+
     public function test_contact_renders_the_inertia_page(): void
     {
         $this->get('/contact')
