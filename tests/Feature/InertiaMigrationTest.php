@@ -103,15 +103,7 @@ class InertiaMigrationTest extends TestCase
      */
     public function test_admin_dashboard_renders_the_platform_overview(): void
     {
-        $admin = User::factory()->create();
-        $role  = Role::create([
-            'name'          => 'ckpt23-admin',
-            'display_name'  => 'Administrator',
-            'is_admin_role' => true,
-        ]);
-        $admin->roles()->attach($role->id);
-
-        $this->actingAs($admin)
+        $this->actingAs($this->makeAdmin())
             ->get('/admin')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
@@ -134,6 +126,43 @@ class InertiaMigrationTest extends TestCase
                 )
                 ->has('recentOrders')
                 ->has('recentTickets')
+            );
+    }
+
+    /** An admin user — a Role with is_admin_role passes the `admin` middleware. */
+    private function makeAdmin(): User
+    {
+        $user = User::factory()->create();
+        $role = Role::create([
+            'name'          => 'ckpt-admin-'.$user->id,
+            'display_name'  => 'Administrator',
+            'is_admin_role' => true,
+        ]);
+        $user->roles()->attach($role->id);
+
+        return $user;
+    }
+
+    /**
+     * Admin/Orders/Index.vue reads a whitelisted `orders` paginator, the echoed
+     * `filters` (so the search box + status select follow the URL) and a
+     * `statuses` option list.
+     */
+    public function test_admin_orders_index_renders_the_filterable_list(): void
+    {
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/orders?status=disputed&q=ORD-123')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Orders/Index')
+                ->has('orders.data')
+                ->where('filters.status', 'disputed')
+                ->where('filters.q', 'ORD-123')
+                ->has('statuses', 6)
+                ->has('statuses.0', fn (Assert $s) => $s
+                    ->where('value', 'pending_payment')
+                    ->where('label', 'Pending Payment')
+                )
             );
     }
 
