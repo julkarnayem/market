@@ -9,6 +9,7 @@ use App\Services\OfferService;
 use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Inertia\Inertia;
 
 class OfferController extends Controller
 {
@@ -34,7 +35,25 @@ class OfferController extends Controller
         };
 
         $offers = $query->latest()->paginate(15);
-        return view('dashboard.offers', compact('offers','tab'));
+
+        $isSellerParty = in_array($tab, ['sent', 'expired'], true);
+
+        return Inertia::render('Dashboard/Offers', [
+            'tab'    => $tab,
+            'offers' => $offers->through(fn ($o) => [
+                'id'                     => $o->id,
+                'asset_slug'             => $o->asset->slug,
+                'asset_title'            => $o->asset->title,
+                'party_name'             => $isSellerParty ? $o->seller?->name : $o->buyer?->name,
+                'amount_formatted'       => Money::format($o->amount),
+                'list_price_formatted'   => Money::format($o->asset->price),
+                'status'                 => $o->status->value,
+                'is_pending'             => $o->isPending(),
+                'is_expired'             => $o->isExpired(),
+                'time_remaining_seconds' => $o->timeRemainingSeconds(),
+                'created_short'          => $o->created_at->format('d M, H:i'),
+            ]),
+        ]);
     }
 
     public function create(Request $request)
@@ -53,7 +72,23 @@ class OfferController extends Controller
             ->where('expires_at','>',now())
             ->first();
 
-        return view('dashboard.offers-create', compact('asset','userActiveOffer'));
+        return Inertia::render('Dashboard/OffersCreate', [
+            'asset' => [
+                'id'                 => $asset->id,
+                'slug'               => $asset->slug,
+                'title'              => $asset->title,
+                'category_name'      => $asset->category?->name,
+                'category_icon'      => $asset->category?->icon,
+                'cover_url'          => $asset->coverImage?->url(),
+                'price_formatted'    => Money::format($asset->price),
+                'quantity'           => (int) $asset->quantity,
+                'available_quantity' => (int) $asset->available_quantity,
+            ],
+            'userActiveOffer' => $userActiveOffer ? [
+                'amount_formatted' => Money::format($userActiveOffer->amount),
+                'expires_human'    => $userActiveOffer->expires_at->diffForHumans(),
+            ] : null,
+        ]);
     }
 
     public function store(Request $request)
