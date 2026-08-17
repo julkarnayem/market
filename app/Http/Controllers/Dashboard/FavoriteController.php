@@ -1,20 +1,34 @@
 <?php
 namespace App\Http\Controllers\Dashboard;
 
+use App\Http\Controllers\Concerns\MapsMarketplaceProps;
 use App\Http\Controllers\Controller;
 use App\Models\Asset;
 use App\Models\Favorite;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Inertia\Inertia;
 
 class FavoriteController extends Controller
 {
+    use MapsMarketplaceProps;
+
     public function index()
     {
+        $mapAsset  = self::mapAsset();
         $favorites = Auth::user()->favorites()
-            ->with(['asset.category','asset.seller','asset.coverImage'])
-            ->latest()->paginate(12);
-        return view('dashboard.favorites', compact('favorites'));
+            ->with(['asset.category', 'asset.seller', 'asset.coverImage'])
+            ->latest()
+            ->paginate(12)
+            ->through(fn (Favorite $fav) => [
+                'id'     => $fav->id,
+                'asset'  => $mapAsset($fav->asset),
+                'status' => $fav->asset->status->value,
+            ]);
+
+        return Inertia::render('Dashboard/Favorites', [
+            'favorites' => $favorites,
+        ]);
     }
 
     /** Toggle favorite — returns JSON for AJAX or redirects. */

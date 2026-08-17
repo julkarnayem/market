@@ -76,10 +76,33 @@ class DashboardController extends Controller
 
     public function purchases()
     {
-        $tab    = request('tab','all');
+        $tab    = request('tab', 'all');
         $orders = Auth::user()->purchases()
-            ->when($tab !== 'all', fn($q) => $q->where('status', $tab))
-            ->with(['asset','seller'])->latest()->paginate(15);
-        return view('dashboard.purchases', compact('orders','tab'));
+            ->when($tab !== 'all', fn ($q) => $q->where('status', $tab))
+            ->with(['asset', 'seller'])
+            ->latest()
+            ->paginate(15)
+            ->withQueryString()
+            ->through(fn ($o) => [
+                'order_number'    => $o->order_number,
+                'asset_title'     => $o->asset?->title,
+                'seller_name'     => $o->seller?->name,
+                'total_formatted' => Money::format((int) $o->buyer_total),
+                'status'          => $o->status->value,
+                'date'            => $o->created_at->format('d M Y'),
+                'show_url'        => route('dashboard.orders.show', $o),
+            ]);
+
+        return Inertia::render('Dashboard/Purchases', [
+            'orders'   => $orders,
+            'tab'      => $tab,
+            'statuses' => [
+                'all'              => 'All',
+                'delivery_pending' => 'Awaiting Delivery',
+                'delivered'        => 'Delivered',
+                'completed'        => 'Completed',
+                'disputed'         => 'Disputed',
+            ],
+        ]);
     }
 }
