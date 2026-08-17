@@ -66,16 +66,16 @@ class InertiaMigrationTest extends TestCase
     }
 
     /**
-     * Coexistence guard: the dashboard is still Blade and must not 500 or gain
-     * an Inertia payload. Every *public* route is Inertia now, so this points at
-     * the authenticated Blade area instead.
+     * Coexistence guard: Blade and Inertia must keep working side by side.
+     * Repoint this at a still-Blade page each time its target migrates —
+     * /marketplace and /dashboard have both already passed through here.
      */
     public function test_unmigrated_blade_pages_still_render(): void
     {
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->get('/dashboard')
+            ->get('/dashboard/favorites')
             ->assertOk()
             ->assertDontSee('data-page', false);
     }
@@ -602,5 +602,99 @@ class InertiaMigrationTest extends TestCase
             ->get('/verify-email')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page->has('flash.status'));
+    }
+
+    // ── Dashboard (checkpoint 11) ────────────────────────────────────────
+
+    public function test_dashboard_overview_renders_the_inertia_page(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->get('/dashboard')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Index')
+                ->has('stats', fn (Assert $stats) => $stats
+                    ->has('available_formatted')
+                    ->has('pending_formatted')
+                    ->where('listings', 0)
+                    ->where('orders', 0)
+                )
+            );
+    }
+
+    /**
+     * Money is integer poisha and App\Support\Money owns the formatting, so the
+     * client must never receive a raw amount to format itself. A user with no
+     * wallet row still gets a well-formed zero.
+     */
+    public function test_dashboard_overview_formats_wallet_money_server_side(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->get('/dashboard')
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('stats.available_formatted', '৳0.00')
+                ->where('stats.pending_formatted', '৳0.00')
+                ->missing('stats.available')
+                ->missing('stats.pending')
+            );
+    }
+
+    /**
+     * The Blade original computed these and rendered none of them; the queries
+     * were dropped rather than shipped unused. Guards against them creeping back.
+     */
+    public function test_dashboard_overview_does_not_ship_unused_props(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->get('/dashboard')
+            ->assertInertia(fn (Assert $page) => $page
+                ->missing('stats.pending_offers')
+                ->missing('stats.unread_msgs')
+                ->missing('recentListings')
+                ->missing('recentPurchases')
+            );
+    }
+
+    public function test_dashboard_settings_renders_the_inertia_page(): void
+    {
+        $user = User::factory()->create(['email_verified_at' => now()]);
+
+        $this->actingAs($user)
+            ->get('/dashboard/settings')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Settings')
+                ->where('emailVerified', true)
+            );
+    }
+
+    public function test_dashboard_settings_reports_an_unverified_email(): void
+    {
+        $user = User::factory()->create(['email_verified_at' => null]);
+
+        $this->actingAs($user)
+            ->get('/dashboard/settings')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('emailVerified', false));
+    }
+
+    #[DataProvider('dashboardRouteProvider')]
+    public function test_dashboard_pages_require_authentication(string $path): void
+    {
+        $this->get($path)->assertRedirect('/login');
+    }
+
+    public static function dashboardRouteProvider(): array
+    {
+        return [
+            'overview' => ['/dashboard'],
+            'settings' => ['/dashboard/settings'],
+        ];
     }
 }

@@ -151,7 +151,7 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::patch('/security/password', [DashProfile::class, 'updatePassword'])->name('.security.password');
 
         Route::get('/purchases', [DashboardController::class, 'purchases'])->name('.purchases');
-        Route::get('/settings', fn() => view('dashboard.settings'))->name('.settings');
+        Route::get('/settings', [DashboardController::class, 'settings'])->name('.settings');
     });
 
     // ── Admin ────────────────────────────────────────────────────────

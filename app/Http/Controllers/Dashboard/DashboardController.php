@@ -2,10 +2,10 @@
 namespace App\Http\Controllers\Dashboard;
 
 use App\Enums\AssetStatus;
-use App\Models\Conversation;
-use App\Models\Message;
 use App\Http\Controllers\Controller;
+use App\Support\Money;
 use Illuminate\Support\Facades\Auth;
+use Inertia\Inertia;
 
 class DashboardController extends Controller
 {
@@ -13,25 +13,26 @@ class DashboardController extends Controller
     {
         $user   = Auth::user();
         $wallet = $user->wallet;
-        $stats  = [
-            'available'    => $wallet?->available_balance ?? 0,
-            'pending'      => $wallet?->pending_balance ?? 0,
-            'listings'     => $user->listings()->where('status', AssetStatus::Published)->count(),
-            'orders'       => $user->purchases()->count() + $user->sales()->count(),
-            'pending_offers'=> $user->receivedOffers()->where('status','pending')->count(),
-            'unread_msgs'  => (function() use ($user) {
-                $convIds = $user->conversations()->pluck('conversations.id');
-                return Message::whereIn('conversation_id', $convIds)
-                    ->where('sender_user_id', '!=', $user->id)
-                    ->whereDoesntHave('conversation', fn($q) => $q->whereHas('participants',
-                        fn($p) => $p->where('users.id', $user->id)
-                                    ->whereRaw('messages.created_at <= conversation_participants.last_read_at')
-                    ))->count();
-            })(),
-        ];
-        $recentListings = $user->listings()->with('category')->latest()->limit(5)->get();
-        $recentPurchases= $user->purchases()->with('asset')->latest()->limit(5)->get();
-        return view('dashboard.index', compact('stats','recentListings','recentPurchases'));
+
+        // Only what the Overview renders. The Blade original also computed
+        // pending_offers, unread_msgs, recentListings and recentPurchases and
+        // then displayed none of them; those queries are gone rather than
+        // shipped to the client unused.
+        return Inertia::render('Dashboard/Index', [
+            'stats' => [
+                'available_formatted' => Money::format((int) ($wallet?->available_balance ?? 0)),
+                'pending_formatted'   => Money::format((int) ($wallet?->pending_balance ?? 0)),
+                'listings'            => $user->listings()->where('status', AssetStatus::Published)->count(),
+                'orders'              => $user->purchases()->count() + $user->sales()->count(),
+            ],
+        ]);
+    }
+
+    public function settings()
+    {
+        return Inertia::render('Dashboard/Settings', [
+            'emailVerified' => Auth::user()->hasVerifiedEmail(),
+        ]);
     }
 
     public function verification()
@@ -65,10 +66,5 @@ class DashboardController extends Controller
             ->when($tab !== 'all', fn($q) => $q->where('status', $tab))
             ->with(['asset','seller'])->latest()->paginate(15);
         return view('dashboard.purchases', compact('orders','tab'));
-    }
-
-    public function section(string $title, string $part = 'the next release')
-    {
-        return view('dashboard.section', compact('title','part'));
     }
 }
