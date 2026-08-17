@@ -57,7 +57,7 @@ const groups: NavGroup[] = [
     },
     {
         label: 'Security',
-        items: [{ route: 'admin.fraud', label: 'Fraud Review', icon: '🚨', perm: 'users.suspend' }],
+        items: [{ route: 'admin.fraud', label: 'Fraud Review', icon: '🚨', perm: 'fraud.view' }],
     },
     {
         label: 'Staff & System',

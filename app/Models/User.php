@@ -23,6 +23,9 @@ class User extends Authenticatable implements MustVerifyEmail
         'bio',
         'name', 'username', 'email', 'phone', 'password',
         'profile_photo_path', 'status', 'verification_status',
+        // FraudService writes these via update(); without them the write was
+        // silently dropped by mass-assignment protection.
+        'risk_score', 'risk_flags',
     ];
 
     protected $hidden = ['password', 'remember_token'];
@@ -37,6 +40,9 @@ class User extends Authenticatable implements MustVerifyEmail
             'password' => 'hashed',
             'status' => UserStatus::class,
             'verification_status' => VerificationStatus::class,
+            // users.risk_flags is a json column; FraudService assigns a PHP array.
+            'risk_flags' => 'array',
+            'risk_score' => 'integer',
         ];
     }
 

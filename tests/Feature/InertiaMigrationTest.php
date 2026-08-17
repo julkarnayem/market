@@ -9,6 +9,8 @@ use App\Models\CategoryAttribute;
 use App\Models\Conversation;
 use App\Models\Dispute;
 use App\Models\Favorite;
+use App\Models\FraudEvent;
+use App\Models\FraudReview;
 use App\Models\MessageReport;
 use App\Models\Order;
 use App\Models\PhoneOtp;
@@ -1292,6 +1294,199 @@ class InertiaMigrationTest extends TestCase
         $fresh = $report->fresh();
         $this->assertSame('dismissed', $fresh->status);
         $this->assertSame($admin->id, $fresh->reviewed_by);
+    }
+
+    /**
+     * Seeds a flagged user: risk fields on the user itself plus the queue row and
+     * one signal event. `FraudReview`/`FraudEvent` have no factories, so both are
+     * built with create(); `User::factory()` works.
+     */
+    private function seedFraudCase(array $reviewOverrides = []): User
+    {
+        $user = User::factory()->create([
+            'name'       => 'Fahim Flagged',
+            'email'      => 'fahim.flagged@example.test',
+            'risk_score' => 80,
+            'risk_flags' => ['duplicate_nid_hash', 'self_purchase_attempt'],
+        ]);
+
+        FraudEvent::create([
+            'user_id'      => $user->id,
+            'signal'       => 'duplicate_nid_hash',
+            'score_impact' => 50,
+            'context'      => '{}',
+            'ip_address'   => '203.0.113.9',
+        ]);
+
+        FraudReview::create(array_merge([
+            'user_id'    => $user->id,
+            'status'     => 'escalated',
+            'risk_score' => 80,
+            'risk_flags' => ['duplicate_nid_hash', 'self_purchase_attempt'],
+        ], $reviewOverrides));
+
+        return $user;
+    }
+
+    /**
+     * Admin/Fraud/Index.vue reads a whitelisted `reviews` paginator (snake_case
+     * signal names humanised server-side), the echoed `filters.status` (active tab,
+     * defaulting to 'pending') and a `tabs` option list. Sorted by risk_score desc.
+     */
+    public function test_admin_fraud_index_renders_the_tabbed_queue(): void
+    {
+        $this->seedFraudCase(['status' => 'pending']);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/fraud')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Fraud/Index')
+                ->where('filters.status', 'pending')
+                ->has('tabs', 6)
+                ->has('tabs.0', fn (Assert $t) => $t
+                    ->where('value', 'pending')
+                    ->where('label', 'Pending')
+                )
+                ->has('reviews.data', 1)
+                ->has('reviews.data.0', fn (Assert $r) => $r
+                    ->where('user_name', 'Fahim Flagged')
+                    ->where('user_email', 'fahim.flagged@example.test')
+                    ->where('risk_score', 80)
+                    ->where('status', 'pending')
+                    ->where('reviewer', null)
+                    // Underscores become spaces for display.
+                    ->where('flags', ['duplicate nid hash', 'self purchase attempt'])
+                    ->etc()
+                )
+            );
+    }
+
+    /** Both index and show authorize `fraud.view`; a bare admin 403s. */
+    public function test_admin_fraud_requires_the_view_permission(): void
+    {
+        $user = $this->seedFraudCase();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/fraud')
+            ->assertForbidden();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/fraud/'.$user->id)
+            ->assertForbidden();
+    }
+
+    /** The queue filter follows ?status=; an escalated case hides under ?status=pending. */
+    public function test_admin_fraud_index_filters_by_status(): void
+    {
+        $this->seedFraudCase(); // escalated
+        $this->actingAs($this->makeSuperAdmin());
+
+        $this->get('/admin/fraud')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'pending')
+                ->has('reviews.data', 0)
+            );
+
+        $this->get('/admin/fraud?status=escalated')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'escalated')
+                ->has('reviews.data', 1)
+            );
+    }
+
+    /** Admin/Fraud/Show.vue reads `user`, an `events` list and a nullable `review`. */
+    public function test_admin_fraud_show_renders_the_case(): void
+    {
+        $user = $this->seedFraudCase();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/fraud/'.$user->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Fraud/Show')
+                ->where('user.name', 'Fahim Flagged')
+                ->where('user.risk_score', 80)
+                ->where('user.flags', ['duplicate nid hash', 'self purchase attempt'])
+                ->where('user.status', 'active')
+                ->has('events', 1)
+                ->has('events.0', fn (Assert $e) => $e
+                    ->where('signal', 'duplicate nid hash')
+                    ->where('score_impact', 50)
+                    ->where('ip', '203.0.113.9')
+                    ->etc()
+                )
+                ->has('review', fn (Assert $r) => $r
+                    ->where('status', 'escalated')
+                    ->etc()
+                )
+                ->etc()
+            );
+    }
+
+    /**
+     * FraudService::clear is pure DB (no notifications), so this is a real
+     * round-trip: the user's score and flags reset and the queue row flips to
+     * 'cleared' with the reviewer recorded. Authorizes `fraud.manage`.
+     *
+     * This also guards the User::$fillable/$casts fix — `risk_score`/`risk_flags`
+     * were missing from both, so the service's update() was silently discarded.
+     */
+    public function test_admin_can_clear_a_fraud_case(): void
+    {
+        $user  = $this->seedFraudCase();
+        $admin = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->from('/admin/fraud/'.$user->id)
+            ->post('/admin/fraud/'.$user->id.'/clear', ['admin_notes' => 'Verified with the seller by phone — false positive.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $fresh = $user->fresh();
+        $this->assertSame(0, $fresh->risk_score);
+        $this->assertSame([], $fresh->risk_flags);
+
+        $review = FraudReview::where('user_id', $user->id)->first();
+        $this->assertSame('cleared', $review->status);
+        $this->assertSame($admin->id, $review->reviewed_by);
+        $this->assertNotNull($review->reviewed_at);
+    }
+
+    /** restrict() flags the queue row only — the account status is untouched. */
+    public function test_admin_can_restrict_a_fraud_case(): void
+    {
+        $user  = $this->seedFraudCase();
+        $admin = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->from('/admin/fraud/'.$user->id)
+            ->post('/admin/fraud/'.$user->id.'/restrict', ['reason' => 'Duplicate NID across three accounts.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $review = FraudReview::where('user_id', $user->id)->first();
+        $this->assertSame('restricted', $review->status);
+        $this->assertSame('Duplicate NID across three accounts.', $review->admin_notes);
+        $this->assertSame($admin->id, $review->reviewed_by);
+
+        // The user's own risk score is advisory and left alone by restrict().
+        $this->assertSame(80, $user->fresh()->risk_score);
+    }
+
+    /** The Vue forms guard these client-side; the server still rejects an empty note. */
+    public function test_fraud_clear_requires_a_note(): void
+    {
+        $user = $this->seedFraudCase();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/fraud/'.$user->id)
+            ->post('/admin/fraud/'.$user->id.'/clear', ['admin_notes' => ''])
+            ->assertSessionHasErrors('admin_notes');
+
+        $this->assertSame(80, $user->fresh()->risk_score);
     }
 
     public function test_contact_renders_the_inertia_page(): void

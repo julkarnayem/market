@@ -29,7 +29,7 @@
             ['admin.support-templates','Templates',       '📝', 'tickets.manage'],
         ],
         'Security' => [
-            ['admin.fraud', 'Fraud Review', '🚨', 'users.suspend'],
+            ['admin.fraud', 'Fraud Review', '🚨', 'fraud.view'],
         ],
         'Staff & System' => [
             ['admin.staff',        'Staff',        '👔', 'staff.view'],
