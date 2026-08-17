@@ -68,15 +68,15 @@ class InertiaMigrationTest extends TestCase
     /**
      * Coexistence guard: Blade and Inertia must keep working side by side.
      * Repoint this at a still-Blade page each time its target migrates —
-     * /marketplace, /dashboard, /dashboard/favorites and /dashboard/wallet
-     * have all already passed through here.
+     * /marketplace, /dashboard, /dashboard/favorites, /dashboard/wallet and
+     * /dashboard/promotions have all already passed through here.
      */
     public function test_unmigrated_blade_pages_still_render(): void
     {
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->get('/dashboard/promotions')
+            ->get('/dashboard/notifications')
             ->assertOk()
             ->assertDontSee('data-page', false);
     }
