@@ -3,6 +3,7 @@ namespace Tests\Feature;
 
 use App\Models\Asset;
 use App\Models\Category;
+use App\Models\CategoryAttribute;
 use App\Models\Favorite;
 use App\Models\PhoneOtp;
 use App\Models\User;
@@ -685,6 +686,111 @@ class InertiaMigrationTest extends TestCase
             ->assertInertia(fn (Assert $page) => $page->where('emailVerified', false));
     }
 
+    // ── Dashboard listings create + edit (checkpoint 19b) ────────────────
+
+    /**
+     * The create wizard ships a category → subcategory → attribute tree.
+     * roots() are the parents; only children carry the selectable flag and the
+     * attribute definitions the Vue steps render.
+     */
+    public function test_dashboard_listings_create_renders_the_inertia_page(): void
+    {
+        $seller = User::factory()->verified()->create();
+
+        $parent = Category::create([
+            'name' => 'Websites', 'slug' => 'websites', 'is_active' => true, 'position' => 1,
+        ]);
+        $child = Category::create([
+            'name' => 'Blogs', 'slug' => 'blogs', 'parent_id' => $parent->id,
+            'is_active' => true, 'position' => 1,
+        ]);
+        CategoryAttribute::create([
+            'category_id' => $child->id, 'key' => 'monthly_visitors', 'label' => 'Monthly Visitors',
+            'type' => 'number', 'is_required' => true, 'is_active' => true, 'position' => 1,
+            'unit' => 'visitors',
+        ]);
+
+        $this->actingAs($seller)
+            ->get('/dashboard/listings/create')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Listings/Create')
+                ->has('feePercent')
+                ->has('categories', 1)
+                ->has('categories.0', fn (Assert $c) => $c
+                    ->where('name', 'Websites')
+                    ->has('children', 1)
+                    ->has('children.0', fn (Assert $sub) => $sub
+                        ->where('name', 'Blogs')
+                        ->where('selectable', true)
+                        ->has('attributes', 1)
+                        ->has('attributes.0', fn (Assert $a) => $a
+                            ->where('label', 'Monthly Visitors')
+                            ->where('type', 'number')
+                            ->where('is_required', true)
+                            ->where('unit', 'visitors')
+                            ->etc()
+                        )
+                        ->etc()
+                    )
+                    ->etc()
+                )
+            );
+    }
+
+    /**
+     * Edit prefills the form from the listing plus its attribute values, and the
+     * server — not the client — owns money rendering (price_bdt for the input,
+     * price_formatted for the locked display).
+     */
+    public function test_dashboard_listings_edit_renders_the_inertia_page(): void
+    {
+        $seller = User::factory()->verified()->create();
+
+        $category = Category::create([
+            'name' => 'Websites', 'slug' => 'websites', 'is_active' => true, 'position' => 1,
+        ]);
+        CategoryAttribute::create([
+            'category_id' => $category->id, 'key' => 'niche', 'label' => 'Niche',
+            'type' => 'select', 'options' => ['Tech', 'Food'], 'is_active' => true, 'position' => 1,
+        ]);
+
+        $asset = Asset::factory()->draft()->create([
+            'user_id'            => $seller->id,
+            'category_id'        => $category->id,
+            'title'              => 'My Draft Blog',
+            'price'              => 250000, // poisha -> ৳2,500.00
+            'quantity'           => 3,
+            'available_quantity' => 3,
+        ]);
+
+        $this->actingAs($seller)
+            ->get("/dashboard/listings/{$asset->id}/edit")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Listings/Edit')
+                ->has('feePercent')
+                ->has('listing', fn (Assert $l) => $l
+                    ->where('id', $asset->id)
+                    ->where('title', 'My Draft Blog')
+                    ->where('status', 'draft')
+                    ->where('quantity', 3)
+                    ->where('price_bdt', '2500')
+                    ->where('price_formatted', '৳2,500.00')
+                    ->where('is_price_locked', false)
+                    ->etc()
+                )
+                ->has('attributes', 1)
+                ->has('attributes.0', fn (Assert $a) => $a
+                    ->where('label', 'Niche')
+                    ->where('type', 'select')
+                    ->has('options', 2)
+                    ->where('value', null)
+                    ->etc()
+                )
+            );
+    }
+
     #[DataProvider('dashboardRouteProvider')]
     public function test_dashboard_pages_require_authentication(string $path): void
     {
@@ -696,6 +802,7 @@ class InertiaMigrationTest extends TestCase
         return [
             'overview' => ['/dashboard'],
             'settings' => ['/dashboard/settings'],
+            'listings-create' => ['/dashboard/listings/create'],
         ];
     }
 }

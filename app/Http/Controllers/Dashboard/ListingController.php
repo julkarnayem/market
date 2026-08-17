@@ -50,9 +50,36 @@ class ListingController extends Controller
     public function create()
     {
         $this->authorize('create', Asset::class);
-        $categories = Category::roots()->active()->with(['children' => fn($q) => $q->active()])->orderBy('position')->get();
-        $feeBp      = $this->settings->sellerFeeBp();
-        return view('dashboard.listings-create', compact('categories','feeBp'));
+        $categories = Category::roots()->active()
+            ->with(['children' => fn ($q) => $q->active()
+                ->with(['attributes' => fn ($a) => $a->where('is_active', true)->orderBy('position')])])
+            ->orderBy('position')->get();
+
+        return Inertia::render('Dashboard/Listings/Create', [
+            'feePercent' => number_format($this->settings->sellerFeeBp() / 100, 2),
+            'categories' => $categories->map(fn (Category $cat) => [
+                'id'            => $cat->id,
+                'name'          => $cat->name,
+                'icon'          => $cat->icon,
+                'is_prohibited' => (bool) $cat->is_prohibited,
+                'children'      => $cat->children->map(fn (Category $sub) => [
+                    'id'            => $sub->id,
+                    'name'          => $sub->name,
+                    'is_prohibited' => (bool) $sub->is_prohibited,
+                    'is_restricted' => (bool) $sub->is_restricted,
+                    'selectable'    => $sub->isSelectable(),
+                    'attributes'    => $sub->attributes->map(fn ($attr) => [
+                        'id'          => $attr->id,
+                        'label'       => $attr->label,
+                        'type'        => $attr->type,
+                        'is_required' => (bool) $attr->is_required,
+                        'unit'        => $attr->unit,
+                        'placeholder' => $attr->placeholder,
+                        'options'     => $attr->safeOptions(),
+                    ])->values(),
+                ])->values(),
+            ])->values(),
+        ]);
     }
 
     public function store(StoreListingRequest $request)
@@ -121,10 +148,38 @@ class ListingController extends Controller
     public function edit(Asset $listing)
     {
         $this->authorize('update', $listing);
-        $listing->load('category.attributes','attributeValues','images');
-        $categories = Category::roots()->active()->with(['children' => fn($q) => $q->active()])->orderBy('position')->get();
-        $feeBp      = $this->settings->sellerFeeBp();
-        return view('dashboard.listings-edit', compact('listing','categories','feeBp'));
+        $listing->load('category.attributes', 'attributeValues');
+
+        $attributes = $listing->category->attributes
+            ->where('is_active', true)->sortBy('position')->values()
+            ->map(function ($attr) use ($listing) {
+                $current = $listing->attributeValues->firstWhere('category_attribute_id', $attr->id);
+                return [
+                    'id'          => $attr->id,
+                    'label'       => $attr->label,
+                    'type'        => $attr->type,
+                    'is_required' => (bool) $attr->is_required,
+                    'unit'        => $attr->unit,
+                    'placeholder' => $attr->placeholder,
+                    'options'     => $attr->safeOptions(),
+                    'value'       => $current?->value,
+                ];
+            });
+
+        return Inertia::render('Dashboard/Listings/Edit', [
+            'feePercent' => number_format($this->settings->sellerFeeBp() / 100, 2),
+            'listing' => [
+                'id'              => $listing->id,
+                'title'           => $listing->title,
+                'description'     => $listing->description,
+                'status'          => $listing->status->value,
+                'quantity'        => $listing->quantity,
+                'price_bdt'       => (string) Money::toBdt($listing->price),
+                'price_formatted' => Money::format($listing->price),
+                'is_price_locked' => $listing->isPriceLocked(),
+            ],
+            'attributes' => $attributes,
+        ]);
     }
 
     public function update(UpdateListingRequest $request, Asset $listing)
