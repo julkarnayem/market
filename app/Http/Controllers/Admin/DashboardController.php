@@ -11,6 +11,8 @@ use App\Models\Promotion;
 use App\Models\SupportTicket;
 use App\Models\User;
 use App\Models\Withdrawal;
+use App\Support\Money;
+use Inertia\Inertia;
 
 class DashboardController extends Controller
 {
@@ -47,7 +49,41 @@ class DashboardController extends Controller
         $recentOrders = Order::with('buyer','asset')->latest()->limit(5)->get();
         $recentTickets= SupportTicket::with('user')->whereIn('status',['open','in_progress'])->latest()->limit(5)->get();
 
-        return view('admin.index', compact('stats','recentOrders','recentTickets'));
+        return Inertia::render('Admin/Index', [
+            // Whitelisted to what the overview renders; revenue is pre-formatted
+            // (integer poisha -> currency string) since Money owns formatting.
+            'stats' => [
+                'users'                   => $stats['users'],
+                'active_users'            => $stats['active_users'],
+                'published_listings'      => $stats['published_listings'],
+                'orders_month'            => $stats['orders_month'],
+                'revenue_month_formatted' => Money::format($stats['revenue_month']),
+                'active_promotions'       => $stats['active_promotions'],
+                'open_tickets'            => $stats['open_tickets'],
+                'unassigned_tickets'      => $stats['unassigned_tickets'],
+                'pending_verifications'   => $stats['pending_verifications'],
+                'pending_listings'        => $stats['pending_listings'],
+                'open_disputes'           => $stats['open_disputes'],
+                'pending_withdrawals'     => $stats['pending_withdrawals'],
+                'approved_withdrawals'    => $stats['approved_withdrawals'],
+                'suspended_users'         => $stats['suspended_users'],
+            ],
+            'recentOrders' => $recentOrders->map(fn (Order $o) => [
+                'id'              => $o->id,
+                'order_number'    => $o->order_number,
+                'asset_title'     => $o->asset?->title ?? '—',
+                'total_formatted' => Money::format((int) $o->buyer_total),
+                'url'             => route('admin.orders.show', $o),
+            ])->values(),
+            'recentTickets' => $recentTickets->map(fn (SupportTicket $t) => [
+                'id'             => $t->id,
+                'subject'        => $t->subject,
+                'priority_label' => ucfirst($t->priority),
+                'priority_color' => $t->priorityColor(),
+                'user_name'      => $t->user?->name ?? 'Unknown',
+                'url'            => route('admin.tickets.show', $t),
+            ])->values(),
+        ]);
     }
 
     public function section(string $title, string $part = 'the next release')

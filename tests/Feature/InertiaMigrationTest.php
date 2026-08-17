@@ -95,6 +95,48 @@ class InertiaMigrationTest extends TestCase
             ->assertDontSee('data-page', false);
     }
 
+    /**
+     * Admin/Index.vue reads a whitelisted `stats` object plus recentOrders /
+     * recentTickets. Requires an admin user (a Role with is_admin_role passes
+     * the `admin` middleware); the seeded 'admin' role name is taken, so use a
+     * test-unique name.
+     */
+    public function test_admin_dashboard_renders_the_platform_overview(): void
+    {
+        $admin = User::factory()->create();
+        $role  = Role::create([
+            'name'          => 'ckpt23-admin',
+            'display_name'  => 'Administrator',
+            'is_admin_role' => true,
+        ]);
+        $admin->roles()->attach($role->id);
+
+        $this->actingAs($admin)
+            ->get('/admin')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Index')
+                ->has('stats', fn (Assert $s) => $s
+                    ->has('users')
+                    ->has('active_users')
+                    ->has('published_listings')
+                    ->has('orders_month')
+                    ->has('revenue_month_formatted')
+                    ->has('active_promotions')
+                    ->has('open_tickets')
+                    ->has('unassigned_tickets')
+                    ->has('pending_verifications')
+                    ->has('pending_listings')
+                    ->has('open_disputes')
+                    ->has('pending_withdrawals')
+                    ->has('approved_withdrawals')
+                    ->has('suspended_users')
+                )
+                ->has('recentOrders')
+                ->has('recentTickets')
+            );
+    }
+
     public function test_contact_renders_the_inertia_page(): void
     {
         $this->get('/contact')
