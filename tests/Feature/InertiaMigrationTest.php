@@ -14,6 +14,7 @@ use App\Models\PhoneOtp;
 use App\Models\Promotion;
 use App\Models\Role;
 use App\Models\SellerVerification;
+use App\Models\SmsLog;
 use App\Models\SupportTicket;
 use App\Models\User;
 use App\Models\Wallet;
@@ -1085,6 +1086,104 @@ class InertiaMigrationTest extends TestCase
             ->assertSessionHas('success');
 
         $this->assertSame('cancelled', $promotion->fresh()->status);
+    }
+
+    private function seedSmsLog(array $overrides = []): SmsLog
+    {
+        $user = User::factory()->create(['name' => 'Rakib Receiver']);
+
+        return SmsLog::create(array_merge([
+            'user_id'  => $user->id,
+            'phone'    => '8801712345678',
+            'template' => 'order_paid',
+            'message'  => 'Your order is confirmed.',
+            'provider' => 'bulksmsbd',
+            'status'   => 'sent',
+            'attempts' => 1,
+            'sent_at'  => now(),
+        ], $overrides));
+    }
+
+    /**
+     * Admin/Notifications/Index.vue reads a whitelisted `stats` object (SMS
+     * totals) and a `provider` status. Authorizes `notifications.view`, so it
+     * needs makeSuperAdmin().
+     */
+    public function test_admin_notifications_index_renders_the_stats(): void
+    {
+        $this->seedSmsLog(['status' => 'sent']);
+        $this->seedSmsLog(['status' => 'failed']);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/notifications')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Notifications/Index')
+                ->where('stats.total', 2)
+                ->where('stats.sent', 1)
+                ->where('stats.failed', 1)
+                ->where('provider.name', 'BulkSMSBD')
+                ->has('provider.enabled')
+            );
+    }
+
+    /** The notifications page authorizes `notifications.view`; a bare admin 403s. */
+    public function test_admin_notifications_index_requires_the_view_permission(): void
+    {
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/notifications')
+            ->assertForbidden();
+    }
+
+    /**
+     * Admin/Notifications/SmsLogs.vue reads a whitelisted `logs` paginator, the
+     * echoed `filters` (so the two selects follow the URL), a `statuses` option
+     * list and the `templates` keys. Authorizes `sms.view`.
+     */
+    public function test_admin_sms_logs_renders_the_filtered_list(): void
+    {
+        $this->seedSmsLog(['template' => 'order_paid']);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/notifications/sms')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Notifications/SmsLogs')
+                ->where('filters.status', 'all')
+                ->has('statuses', 3)
+                ->has('templates')
+                ->has('logs.data', 1)
+                ->has('logs.data.0', fn (Assert $log) => $log
+                    ->where('user', 'Rakib Receiver')
+                    ->where('phone', '880*******678') // maskedPhone(): 3 + 7 masked + 3
+                    ->where('template', 'order_paid')
+                    ->where('status', 'sent')
+                    ->etc()
+                )
+            );
+    }
+
+    /** The status filter follows ?status=; a failed log hides under ?status=sent. */
+    public function test_admin_sms_logs_filters_by_status(): void
+    {
+        $this->seedSmsLog(['status' => 'failed', 'sent_at' => null, 'error_message' => 'Gateway timeout']);
+        $this->actingAs($this->makeSuperAdmin());
+
+        // Only 'sent' requested -> the failed log is hidden.
+        $this->get('/admin/notifications/sms?status=sent')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'sent')
+                ->has('logs.data', 0)
+            );
+
+        // Requesting 'failed' surfaces it.
+        $this->get('/admin/notifications/sms?status=failed')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'failed')
+                ->has('logs.data', 1)
+            );
     }
 
     public function test_contact_renders_the_inertia_page(): void
