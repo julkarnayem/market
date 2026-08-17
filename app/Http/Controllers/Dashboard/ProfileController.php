@@ -6,12 +6,20 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
+use Inertia\Inertia;
 
 class ProfileController extends Controller
 {
     public function show()
     {
-        return view('dashboard.profile', ['user' => Auth::user()]);
+        $user = Auth::user();
+
+        return Inertia::render('Dashboard/Profile', [
+            // name/username/email/phone/avatar arrive via shared auth.user;
+            // only the fields the whitelist omits are passed here.
+            'bio'         => $user->bio,
+            'memberSince' => $user->created_at->format('F Y'),
+        ]);
     }
 
     public function update(Request $request)
@@ -42,7 +50,11 @@ class ProfileController extends Controller
 
     public function security()
     {
-        return view('dashboard.security');
+        $lastLogin = Auth::user()->last_login_at?->diffForHumans() ?? 'First session';
+
+        return Inertia::render('Dashboard/Security', [
+            'lastLogin' => $lastLogin,
+        ]);
     }
 
     public function updatePassword(Request $request)
