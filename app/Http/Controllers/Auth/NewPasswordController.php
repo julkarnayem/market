@@ -6,6 +6,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rules\Password;
+use Inertia\Inertia;
 
 class NewPasswordController extends Controller
 {
@@ -14,7 +15,10 @@ class NewPasswordController extends Controller
     public function create()
     {
         if (!session('reset_phone')) return redirect()->route('password.request');
-        return view('auth.reset-verify');
+
+        return Inertia::render('Auth/ResetVerify', [
+            'phone' => session('reset_phone'),
+        ]);
     }
 
     public function verifyOtp(Request $request)
@@ -43,7 +47,7 @@ class NewPasswordController extends Controller
         if (!session('reset_phone') || !session('reset_phone_verified')) {
             return redirect()->route('password.request');
         }
-        return view('auth.reset-password');
+        return Inertia::render('Auth/ResetPassword');
     }
 
     public function store(Request $request)

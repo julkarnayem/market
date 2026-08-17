@@ -5,10 +5,11 @@ namespace App\Http\Controllers\Auth;
 use App\Http\Controllers\Controller;
 use Illuminate\Foundation\Auth\EmailVerificationRequest;
 use Illuminate\Http\Request;
+use Inertia\Inertia;
 
 class EmailVerificationController extends Controller
 {
-    public function notice() { return view('auth.verify-email'); }
+    public function notice() { return Inertia::render('Auth/VerifyEmail'); }
 
     public function verify(EmailVerificationRequest $request)
     {
@@ -19,6 +20,9 @@ class EmailVerificationController extends Controller
     public function send(Request $request)
     {
         $request->user()->sendEmailVerificationNotification();
-        return back()->with('status', 'verification-link-sent');
+
+        // A readable sentence rather than the Breeze 'verification-link-sent'
+        // sentinel: PublicLayout renders the shared `flash.status` prop verbatim.
+        return back()->with('status', 'A new verification link has been sent to your email address.');
     }
 }

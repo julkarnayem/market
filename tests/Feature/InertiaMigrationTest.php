@@ -4,7 +4,10 @@ namespace Tests\Feature;
 use App\Models\Asset;
 use App\Models\Category;
 use App\Models\Favorite;
+use App\Models\PhoneOtp;
 use App\Models\User;
+use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
+use Illuminate\Support\Facades\Notification;
 use Inertia\Testing\AssertableInertia as Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -62,11 +65,17 @@ class InertiaMigrationTest extends TestCase
             );
     }
 
-    /** Coexistence guard: /marketplace is still Blade and must not 500 or gain an Inertia payload. */
+    /**
+     * Coexistence guard: the dashboard is still Blade and must not 500 or gain
+     * an Inertia payload. Every *public* route is Inertia now, so this points at
+     * the authenticated Blade area instead.
+     */
     public function test_unmigrated_blade_pages_still_render(): void
     {
-        // / and /contact are Inertia now; /marketplace is the remaining public Blade page.
-        $this->get('/marketplace')
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->get('/dashboard')
             ->assertOk()
             ->assertDontSee('data-page', false);
     }
@@ -393,5 +402,205 @@ class InertiaMigrationTest extends TestCase
     public function test_profile_show_404s_for_an_unknown_user(): void
     {
         $this->get('/users/nobody-here')->assertNotFound();
+    }
+
+    // ── Auth pages ───────────────────────────────────────────────────────
+    // The signup and password-reset flows are three-step and session-gated:
+    // each GET must both render its Vue component and keep the server-side
+    // guard that redirects when an earlier step was skipped.
+
+    public function test_login_renders_the_inertia_page(): void
+    {
+        $this->get('/login')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->component('Auth/Login'));
+    }
+
+    /** Login.vue renders both a rejected password and unknown credentials under `email`. */
+    public function test_login_surfaces_bad_credentials_as_an_email_error(): void
+    {
+        $this->from('/login')
+            ->post('/login', ['email' => 'nobody@example.com', 'password' => 'whatever'])
+            ->assertRedirect('/login')
+            ->assertSessionHasErrors('email');
+
+        $this->assertGuest();
+    }
+
+    public function test_register_step_one_renders_the_inertia_page(): void
+    {
+        $this->get('/register')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->component('Auth/Register'));
+    }
+
+    public function test_register_verify_redirects_when_the_phone_step_was_skipped(): void
+    {
+        $this->get('/register/verify')->assertRedirect(route('register'));
+    }
+
+    public function test_register_verify_renders_the_phone_it_sent_the_code_to(): void
+    {
+        $this->withSession(['register_phone' => '01711234567'])
+            ->get('/register/verify')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Auth/RegisterVerify')
+                ->where('phone', '01711234567')
+            );
+    }
+
+    /** Holding a phone in the session is not enough — it has to be OTP-verified. */
+    public function test_register_details_redirects_until_the_phone_is_verified(): void
+    {
+        $this->get('/register/details')->assertRedirect(route('register'));
+
+        $this->withSession(['register_phone' => '01711234567'])
+            ->get('/register/details')
+            ->assertRedirect(route('register'));
+    }
+
+    public function test_register_details_renders_the_verified_phone(): void
+    {
+        $this->withSession(['register_phone' => '01711234567', 'register_phone_verified' => true])
+            ->get('/register/details')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Auth/RegisterDetails')
+                ->where('phone', '01711234567')
+            );
+    }
+
+    /** End-to-end across all three steps, driving the real OTP the controller stored. */
+    public function test_the_whole_register_flow_creates_an_account(): void
+    {
+        $this->post('/register/send-otp', ['phone' => '01711234567'])
+            ->assertRedirect(route('register.verify'))
+            ->assertSessionHas('register_phone', '01711234567');
+
+        $otp = PhoneOtp::where('phone', '01711234567')->latest()->firstOrFail();
+
+        $this->post('/register/verify-otp', ['otp' => $otp->otp])
+            ->assertRedirect(route('register.details'))
+            ->assertSessionHas('register_phone_verified', true);
+
+        $this->post('/register', [
+            'first_name'            => 'Ada',
+            'last_name'             => 'Lovelace',
+            'email'                 => 'ada@example.com',
+            'password'              => 'Password123!',
+            'password_confirmation' => 'Password123!',
+        ])->assertRedirect(route('home'));
+
+        $this->assertDatabaseHas('users', [
+            'email' => 'ada@example.com',
+            'name'  => 'Ada Lovelace',
+            'phone' => '01711234567',
+        ]);
+        $this->assertAuthenticated();
+
+        // The session keys are cleared so the flow cannot be replayed.
+        $this->assertNull(session('register_phone'));
+        $this->assertNull(session('register_phone_verified'));
+    }
+
+    public function test_a_wrong_otp_comes_back_as_an_otp_error(): void
+    {
+        $this->post('/register/send-otp', ['phone' => '01711234567'])
+            ->assertRedirect(route('register.verify'));
+
+        // 000000 collides with a real code only if random_int returned it; the
+        // generator's range starts at 100000, so it never can.
+        $this->from('/register/verify')
+            ->post('/register/verify-otp', ['otp' => '000000'])
+            ->assertRedirect('/register/verify')
+            ->assertSessionHasErrors('otp');
+    }
+
+    public function test_forgot_password_renders_the_inertia_page(): void
+    {
+        $this->get('/forgot-password')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->component('Auth/ForgotPassword'));
+    }
+
+    public function test_reset_verify_redirects_when_the_phone_step_was_skipped(): void
+    {
+        $this->get('/forgot-password/verify')->assertRedirect(route('password.request'));
+    }
+
+    public function test_reset_verify_renders_the_phone_it_sent_the_code_to(): void
+    {
+        $this->withSession(['reset_phone' => '01711234567'])
+            ->get('/forgot-password/verify')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Auth/ResetVerify')
+                ->where('phone', '01711234567')
+            );
+    }
+
+    public function test_reset_password_redirects_until_the_phone_is_verified(): void
+    {
+        $this->get('/forgot-password/reset')->assertRedirect(route('password.request'));
+
+        $this->withSession(['reset_phone' => '01711234567'])
+            ->get('/forgot-password/reset')
+            ->assertRedirect(route('password.request'));
+    }
+
+    public function test_reset_password_renders_the_inertia_page(): void
+    {
+        $this->withSession(['reset_phone' => '01711234567', 'reset_phone_verified' => true])
+            ->get('/forgot-password/reset')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->component('Auth/ResetPassword'));
+    }
+
+    public function test_forgot_password_rejects_an_unknown_number(): void
+    {
+        $this->from('/forgot-password')
+            ->post('/forgot-password', ['phone' => '01711234567'])
+            ->assertRedirect('/forgot-password')
+            ->assertSessionHasErrors('phone');
+    }
+
+    public function test_verify_email_renders_for_an_authenticated_user(): void
+    {
+        $user = User::factory()->create(['email_verified_at' => null]);
+
+        $this->actingAs($user)
+            ->get('/verify-email')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Auth/VerifyEmail')
+                // VerifyEmail.vue names the address from the shared auth prop.
+                ->where('auth.user.email', $user->email)
+            );
+    }
+
+    /**
+     * PublicLayout renders the shared `flash.status` prop verbatim, so the resend
+     * endpoint must flash a sentence rather than Breeze's 'verification-link-sent'.
+     */
+    public function test_resending_verification_flashes_a_human_readable_status(): void
+    {
+        Notification::fake();
+
+        $user = User::factory()->create(['email_verified_at' => null]);
+
+        $this->actingAs($user)
+            ->from('/verify-email')
+            ->post('/verify-email/send')
+            ->assertRedirect('/verify-email')
+            ->assertSessionHas('status', fn (string $status) => $status !== 'verification-link-sent'
+                && str_contains($status, 'verification link'));
+
+        Notification::assertSentTo($user, VerifyEmailNotification::class);
+
+        $this->actingAs($user)
+            ->get('/verify-email')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->has('flash.status'));
     }
 }

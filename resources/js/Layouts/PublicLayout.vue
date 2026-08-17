@@ -279,7 +279,12 @@ const navLinks = [
         </main>
 
         <footer class="mt-8 bg-slate-900 text-slate-400">
-            <div class="mx-auto max-w-7xl px-3 pb-4 pt-10 sm:px-4 lg:px-4">
+            <!--
+                pb-20 below md clears the fixed mobile bottom-nav. `main` already
+                carries pb-20, but the footer is a *sibling* of main, so that
+                padding does nothing here and the copyright line was covered.
+            -->
+            <div class="mx-auto max-w-7xl px-3 pb-20 pt-10 sm:px-4 md:pb-4 lg:px-4">
                 <div class="grid grid-cols-2 gap-8 md:grid-cols-5">
                     <!-- Brand -->
                     <div class="col-span-2">

@@ -8,10 +8,11 @@ use App\Services\AuditLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
+use Inertia\Inertia;
 
 class AuthenticatedSessionController extends Controller
 {
-    public function create() { return view('auth.login'); }
+    public function create() { return Inertia::render('Auth/Login'); }
 
     public function store(Request $request, AuditLogger $audit)
     {

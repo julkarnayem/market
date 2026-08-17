@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rules\Password;
+use Inertia\Inertia;
 
 class RegisteredUserController extends Controller
 {
@@ -19,7 +20,7 @@ class RegisteredUserController extends Controller
     // Step 1: Show phone form
     public function create()
     {
-        return view('auth.register');
+        return Inertia::render('Auth/Register');
     }
 
     // Step 1: Send OTP
@@ -68,7 +69,11 @@ class RegisteredUserController extends Controller
     public function showVerify()
     {
         if (!session('register_phone')) return redirect()->route('register');
-        return view('auth.register-verify');
+
+        // The page echoes the number back so the user can confirm where the OTP went.
+        return Inertia::render('Auth/RegisterVerify', [
+            'phone' => session('register_phone'),
+        ]);
     }
 
     // Step 2: Verify OTP
@@ -99,7 +104,9 @@ class RegisteredUserController extends Controller
         if (!session('register_phone') || !session('register_phone_verified')) {
             return redirect()->route('register');
         }
-        return view('auth.register-details');
+        return Inertia::render('Auth/RegisterDetails', [
+            'phone' => session('register_phone'),
+        ]);
     }
 
     // Step 3: Create account

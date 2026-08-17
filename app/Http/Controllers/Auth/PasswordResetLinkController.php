@@ -5,6 +5,7 @@ use App\Http\Controllers\Controller;
 use App\Models\PhoneBlock;
 use App\Models\PhoneOtp;
 use App\Models\User;
+use Inertia\Inertia;
 
 class PasswordResetLinkController extends Controller
 {
@@ -12,7 +13,7 @@ class PasswordResetLinkController extends Controller
 
     public function create()
     {
-        return view('auth.forgot-password');
+        return Inertia::render('Auth/ForgotPassword');
     }
 
     public function store(\Illuminate\Http\Request $request)
