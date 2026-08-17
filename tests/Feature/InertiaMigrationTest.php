@@ -12,6 +12,7 @@ use App\Models\Role;
 use App\Models\SellerVerification;
 use App\Models\SupportTicket;
 use App\Models\User;
+use App\Models\Wallet;
 use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
@@ -434,6 +435,105 @@ class InertiaMigrationTest extends TestCase
                     ->where('label', 'Pending')
                 )
             );
+    }
+
+    /**
+     * A wallet fixture. Wallet's factory is broken (HasFactory imported but the
+     * trait is never applied — see [[market-pre-existing-issues]]), so build it
+     * with create(); there's no wallet auto-create observer to collide with.
+     */
+    private function seedWallet(int $available = 0, int $pending = 0, array $userOverrides = []): Wallet
+    {
+        $member = User::factory()->create($userOverrides);
+
+        return Wallet::create([
+            'user_id'           => $member->id,
+            'available_balance' => $available,
+            'pending_balance'   => $pending,
+            'currency'          => 'BDT',
+        ]);
+    }
+
+    /**
+     * Admin/Wallets/Index.vue reads a whitelisted `wallets` paginator (ordered by
+     * balance) + the echoed `q` filter, with server-formatted money. index()
+     * authorizes payments.view, so it needs makeSuperAdmin().
+     */
+    public function test_admin_wallets_index_renders_the_searchable_list(): void
+    {
+        $this->seedWallet(123456, 5000, ['name' => 'Rich Seller']);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/wallets?q=Rich')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Wallets/Index')
+                ->where('filters.q', 'Rich')
+                ->has('wallets.data', 1)
+                ->has('wallets.data.0', fn (Assert $w) => $w
+                    ->where('user_name', 'Rich Seller')
+                    ->where('available', '৳1,234.56')
+                    ->where('pending', '৳50.00')
+                    ->where('total', '৳1,284.56')
+                    ->etc()
+                )
+            );
+    }
+
+    /** Show whitelists the balance summary + a transaction ledger paginator. */
+    public function test_admin_wallets_show_renders_the_balance_and_ledger(): void
+    {
+        $wallet = $this->seedWallet(100000, 0, ['name' => 'Kamrul Seller']);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/wallets/'.$wallet->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Wallets/Show')
+                ->where('wallet.user_name', 'Kamrul Seller')
+                ->where('wallet.available', '৳1,000.00')
+                ->where('wallet.total', '৳1,000.00')
+                ->has('transactions.data')
+            );
+    }
+
+    /**
+     * The manual adjustment is a real state change (adminAdjust is pure DB — no
+     * SMS/Telegram), so this is a full round-trip: a ৳100 credit lands on the
+     * balance and flashes success.
+     */
+    public function test_admin_can_adjust_a_wallet_balance(): void
+    {
+        $wallet = $this->seedWallet(5000); // ৳50.00
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/wallets/'.$wallet->id)
+            ->post('/admin/wallets/'.$wallet->id.'/adjust', [
+                'amount_bdt' => '100',
+                'reason'     => 'Compensation for a delayed payout.',
+            ])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        // ৳50.00 + ৳100.00 credited => ৳150.00 = 15000 poisha.
+        $this->assertSame(15000, $wallet->fresh()->available_balance);
+    }
+
+    /** The adjustment validates: a too-short reason comes back as a field error, balance untouched. */
+    public function test_admin_wallet_adjustment_requires_a_reason(): void
+    {
+        $wallet = $this->seedWallet(5000);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/wallets/'.$wallet->id)
+            ->post('/admin/wallets/'.$wallet->id.'/adjust', [
+                'amount_bdt' => '100',
+                'reason'     => 'short',
+            ])
+            ->assertRedirect('/admin/wallets/'.$wallet->id)
+            ->assertSessionHasErrors('reason');
+
+        $this->assertSame(5000, $wallet->fresh()->available_balance);
     }
 
     public function test_contact_renders_the_inertia_page(): void
