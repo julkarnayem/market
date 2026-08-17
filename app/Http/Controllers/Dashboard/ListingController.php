@@ -13,6 +13,7 @@ use App\Services\SettingsService;
 use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Inertia\Inertia;
 
 class ListingController extends Controller
 {
@@ -25,10 +26,25 @@ class ListingController extends Controller
     public function index()
     {
         $status   = request('status','all');
-        $query    = Auth::user()->listings()->with('category','images');
+        $query    = Auth::user()->listings();
         if ($status !== 'all') $query->where('status', $status);
         $listings = $query->latest()->paginate(15)->withQueryString();
-        return view('dashboard.listings', compact('listings','status'));
+
+        return Inertia::render('Dashboard/Listings/Index', [
+            'status'  => $status,
+            'canSell' => Auth::user()->canSell(),
+            'listings' => $listings->through(fn (Asset $l) => [
+                'id'                 => $l->id,
+                'title'              => $l->title,
+                'slug'               => $l->slug,
+                'price_formatted'    => Money::format($l->price),
+                'quantity'           => $l->quantity,
+                'available_quantity' => $l->available_quantity,
+                'status'             => $l->status->value,
+                'is_featured'        => (bool) $l->is_featured,
+                'created_date'       => $l->created_at->format('d M Y'),
+            ]),
+        ]);
     }
 
     public function create()
@@ -60,8 +76,46 @@ class ListingController extends Controller
     public function show(Asset $listing)
     {
         $this->authorize('view', $listing);
-        $listing->load('category.attributes','attributeValues.attribute','images','edits.reviewer');
-        return view('dashboard.listings-show', compact('listing'));
+        $listing->load('category','coverImage','attributeValues.attribute','images','edits');
+        $user = Auth::user();
+
+        return Inertia::render('Dashboard/Listings/Show', [
+            'listing' => [
+                'id'                     => $listing->id,
+                'title'                  => $listing->title,
+                'slug'                   => $listing->slug,
+                'description'            => $listing->description,
+                'status'                 => $listing->status->value,
+                'is_featured'            => (bool) $listing->is_featured,
+                'category_name'          => $listing->category?->name,
+                'price_formatted'        => Money::format($listing->price),
+                'quantity'               => $listing->quantity,
+                'available_quantity'     => $listing->available_quantity,
+                'sold_quantity'          => $listing->sold_quantity,
+                'created_date'           => $listing->created_at->format('d M Y'),
+                'updated_human'          => $listing->updated_at->diffForHumans(),
+                'rejection_reason'       => $listing->rejection_reason,
+                'changes_requested_note' => $listing->changes_requested_note,
+                'cover_url'              => $listing->coverImage?->url() ?? $listing->images->first()?->url(),
+                'images'                 => $listing->images->map(fn ($img) => [
+                    'id'  => $img->id,
+                    'url' => $img->url(),
+                ])->values(),
+                'attributes'             => $listing->attributeValues->map(fn ($av) => [
+                    'id'    => $av->id,
+                    'label' => $av->attribute?->label,
+                    'value' => $av->value,
+                ])->values(),
+                'edits'                  => $listing->edits->map(fn ($e) => [
+                    'id'     => $e->id,
+                    'status' => $e->status,
+                    'note'   => $e->review_note,
+                    'at'     => $e->created_at->format('d M Y, H:i'),
+                ])->values(),
+            ],
+            'canUpdate'      => $user->can('update', $listing),
+            'canTogglePause' => $user->can('togglePause', $listing),
+        ]);
     }
 
     public function edit(Asset $listing)
