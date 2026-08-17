@@ -1489,6 +1489,331 @@ class InertiaMigrationTest extends TestCase
         $this->assertSame(80, $user->fresh()->risk_score);
     }
 
+    // ── Admin support tickets (checkpoint 38) ───────────────────────────
+
+    /**
+     * `SupportTicket` imports HasFactory without applying it (see the
+     * pre-existing-issues note), so tickets are built with create().
+     *
+     * The owner's email and the reference are unique per call — a test that
+     * seeds two tickets would otherwise trip the users.email unique index.
+     */
+    private int $ticketSeq = 0;
+
+    private function seedAdminTicket(array $overrides = []): SupportTicket
+    {
+        $suffix = ++$this->ticketSeq === 1 ? '' : (string) $this->ticketSeq;
+        $owner  = User::factory()->create([
+            'name'  => 'Tanvir Buyer',
+            'email' => "tanvir.buyer{$suffix}@example.test",
+        ]);
+
+        return SupportTicket::create(array_merge([
+            'reference'     => 'TKT-20260818-CCC333'.$suffix,
+            'user_id'       => $owner->id,
+            'category'      => 'payment',
+            'subject'       => 'Payment stuck on checkout',
+            'priority'      => 'high',
+            'status'        => TicketStatus::Open,
+            'last_reply_at' => now(),
+        ], $overrides));
+    }
+
+    /**
+     * Admin/Tickets/Index.vue reads a whitelisted `tickets` paginator, the echoed
+     * `filters` (status tab + q + priority), a `tabs` list and `priorities`.
+     * index() authorizes `tickets.manage`, so it needs makeSuperAdmin().
+     */
+    public function test_admin_tickets_index_renders_the_tabbed_list(): void
+    {
+        $this->seedAdminTicket();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/tickets')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Tickets/Index')
+                ->where('filters.status', 'open')
+                ->where('filters.q', null)
+                ->where('filters.priority', null)
+                // 7 tabs: the Blade's 6 plus waiting_for_staff.
+                ->has('tabs', 7)
+                ->has('priorities', 4)
+                ->has('tickets.data', 1)
+                ->has('tickets.data.0', fn (Assert $t) => $t
+                    ->where('reference', 'TKT-20260818-CCC333')
+                    ->where('user_name', 'Tanvir Buyer')
+                    ->where('subject', 'Payment stuck on checkout')
+                    ->where('priority_label', 'High')
+                    ->where('priority_color', 'amber')
+                    ->where('status', 'open')
+                    ->where('assignee', null)
+                    ->etc()
+                )
+            );
+    }
+
+    /** The queue includes a waiting_for_staff tab — the state a user reply produces. */
+    public function test_admin_tickets_index_has_a_waiting_on_staff_tab(): void
+    {
+        $this->seedAdminTicket(['status' => TicketStatus::WaitingForStaff]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/tickets?status=waiting_for_staff')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'waiting_for_staff')
+                ->has('tickets.data', 1)
+            );
+    }
+
+    /** Reads authorize `tickets.view`; a permissionless admin role still 403s. */
+    public function test_admin_tickets_require_a_ticket_permission(): void
+    {
+        $ticket = $this->seedAdminTicket();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/tickets')
+            ->assertForbidden();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/tickets/'.$ticket->id)
+            ->assertForbidden();
+    }
+
+    /**
+     * The sidebar shows Support Tickets on `tickets.view`, which the seeded
+     * moderator role holds without `tickets.manage` — so the queue must open for
+     * them while every write stays behind manage. Authorizing manage on index()
+     * made a moderator's own menu link 403.
+     */
+    public function test_ticket_view_permission_reads_but_cannot_write(): void
+    {
+        $ticket = $this->seedAdminTicket();
+
+        $moderator = User::factory()->create();
+        $moderator->roles()->attach(Role::where('name', 'moderator')->value('id'));
+        $this->assertTrue($moderator->hasPermission('tickets.view'));
+        $this->assertFalse($moderator->hasPermission('tickets.manage'));
+
+        $this->actingAs($moderator);
+        $this->get('/admin/tickets')->assertOk();
+        $this->get('/admin/tickets/'.$ticket->id)->assertOk();
+
+        $this->post('/admin/tickets/'.$ticket->id.'/reply', ['body' => 'Nope.'])->assertForbidden();
+        $this->post('/admin/tickets/'.$ticket->id.'/note', ['body' => 'Nope.'])->assertForbidden();
+        $this->post('/admin/tickets/'.$ticket->id.'/assign', ['assigned_to' => $moderator->id])->assertForbidden();
+        $this->patch('/admin/tickets/'.$ticket->id.'/status', ['status' => 'closed'])->assertForbidden();
+        $this->patch('/admin/tickets/'.$ticket->id.'/priority', ['priority' => 'low'])->assertForbidden();
+
+        $this->assertSame(0, $ticket->messages()->count());
+        $this->assertSame(TicketStatus::Open, $ticket->fresh()->status);
+    }
+
+    /**
+     * Regression guard for the ungrouped orWhere in the Blade-era query: the
+     * reference/subject search was OR'd at the top level, so a match escaped the
+     * status and priority filters entirely. The search is now wrapped.
+     */
+    public function test_admin_tickets_search_stays_inside_the_status_filter(): void
+    {
+        $this->seedAdminTicket(['subject' => 'Refund not received']);
+        $this->seedAdminTicket([
+            'reference' => 'TKT-20260818-DDD444',
+            'subject'   => 'Refund question, already closed',
+            'status'    => TicketStatus::Closed,
+        ]);
+
+        $this->actingAs($this->makeSuperAdmin());
+
+        // Searching inside the Open tab must not surface the closed ticket.
+        $this->get('/admin/tickets?status=open&q=Refund')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.q', 'Refund')
+                ->has('tickets.data', 1)
+                ->where('tickets.data.0.subject', 'Refund not received')
+            );
+
+        // ?status=all sees both.
+        $this->get('/admin/tickets?status=all&q=Refund')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->has('tickets.data', 2));
+    }
+
+    /** The priority select filters too, and is echoed back for the control. */
+    public function test_admin_tickets_index_filters_by_priority(): void
+    {
+        $this->seedAdminTicket(); // high
+        $this->actingAs($this->makeSuperAdmin());
+
+        $this->get('/admin/tickets?priority=low')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.priority', 'low')
+                ->has('tickets.data', 0)
+            );
+
+        $this->get('/admin/tickets?priority=high')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->has('tickets.data', 1));
+    }
+
+    /**
+     * Admin/Tickets/Show.vue reads the ticket, its thread, the assignable `staff`
+     * list and the status/priority option lists. Admins DO see internal notes
+     * (flagged is_internal so the bubble renders amber + an INTERNAL badge).
+     */
+    public function test_admin_tickets_show_renders_the_thread(): void
+    {
+        $ticket = $this->seedAdminTicket();
+        $admin  = $this->makeSuperAdmin();
+        $ticket->messages()->create([
+            'user_id'        => $ticket->user_id,
+            'body'           => 'My card was charged but the order is still pending.',
+            'is_staff_reply' => false,
+        ]);
+        $ticket->messages()->create([
+            'user_id'          => $admin->id,
+            'body'             => 'Escalating to finance — gateway shows a hold.',
+            'is_staff_reply'   => true,
+            'is_internal_note' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/tickets/'.$ticket->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Tickets/Show')
+                ->where('ticket.reference', 'TKT-20260818-CCC333')
+                ->where('ticket.user_email', 'tanvir.buyer@example.test')
+                ->where('ticket.priority_color', 'amber')
+                ->where('ticket.assigned_to', null)
+                ->has('ticket.messages', 2)
+                ->where('ticket.messages.0.is_staff', false)
+                ->where('ticket.messages.0.initial', 'T')
+                ->where('ticket.messages.1.is_internal', true)
+                ->where('ticket.messages.1.attachment', null)
+                ->has('statuses', 5)
+                ->has('priorities', 4)
+                ->has('staff')
+                ->etc()
+            );
+    }
+
+    /**
+     * reply() is DB + an in-app (database) notification — no SMS/Telegram — so
+     * this is a real round-trip: the message lands as a staff reply and the
+     * service flips the ticket to waiting_for_user.
+     */
+    public function test_admin_can_reply_to_a_ticket(): void
+    {
+        $ticket = $this->seedAdminTicket();
+        $admin  = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->from('/admin/tickets/'.$ticket->id)
+            ->post('/admin/tickets/'.$ticket->id.'/reply', ['body' => 'We have released the hold — please retry.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        // messages() is ->oldest(); reorder so "the message just written" is
+        // unambiguous even when two rows share a created_at second.
+        $msg = $ticket->messages()->reorder('id', 'desc')->first();
+        $this->assertSame('We have released the hold — please retry.', $msg->body);
+        $this->assertTrue($msg->is_staff_reply);
+        $this->assertFalse((bool) $msg->is_internal_note);
+        $this->assertSame(TicketStatus::WaitingForUser, $ticket->fresh()->status);
+    }
+
+    /** Internal notes are staff-only rows on the same thread. */
+    public function test_admin_can_add_an_internal_note(): void
+    {
+        $ticket = $this->seedAdminTicket();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/tickets/'.$ticket->id)
+            ->post('/admin/tickets/'.$ticket->id.'/note', ['body' => 'Chargeback risk — watch this account.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $msg = $ticket->messages()->reorder('id', 'desc')->first();
+        $this->assertTrue((bool) $msg->is_internal_note);
+        $this->assertTrue((bool) $msg->is_staff_reply);
+        // A note is not a reply: the status must not move to waiting_for_user.
+        $this->assertSame(TicketStatus::Open, $ticket->fresh()->status);
+    }
+
+    /** assign() is a POST; passing an empty assigned_to unassigns. */
+    public function test_admin_can_assign_and_unassign_a_ticket(): void
+    {
+        $ticket = $this->seedAdminTicket();
+        $admin  = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->from('/admin/tickets/'.$ticket->id)
+            ->post('/admin/tickets/'.$ticket->id.'/assign', ['assigned_to' => $admin->id])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+        $this->assertSame($admin->id, $ticket->fresh()->assigned_to);
+
+        $this->post('/admin/tickets/'.$ticket->id.'/assign', ['assigned_to' => ''])
+            ->assertRedirect();
+        $this->assertNull($ticket->fresh()->assigned_to);
+    }
+
+    /** status and priority are PATCH routes, so the Vue forms use router.patch. */
+    public function test_admin_can_change_ticket_status_and_priority(): void
+    {
+        $ticket = $this->seedAdminTicket();
+        $this->actingAs($this->makeSuperAdmin());
+
+        $this->from('/admin/tickets/'.$ticket->id)
+            ->patch('/admin/tickets/'.$ticket->id.'/status', ['status' => 'resolved', 'reason' => 'Refund issued.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+        $fresh = $ticket->fresh();
+        $this->assertSame(TicketStatus::Resolved, $fresh->status);
+        $this->assertNotNull($fresh->resolved_at);
+
+        $this->patch('/admin/tickets/'.$ticket->id.'/priority', ['priority' => 'urgent'])
+            ->assertRedirect();
+        $this->assertSame('urgent', $ticket->fresh()->priority);
+    }
+
+    /**
+     * Security regression guard: Admin\TicketController::internalNote writes
+     * is_internal_note=true rows, and Dashboard\TicketController::show used to
+     * load the whole thread — leaking staff-only notes to the ticket owner.
+     */
+    public function test_dashboard_ticket_thread_hides_internal_notes(): void
+    {
+        $ticket = $this->seedAdminTicket();
+        $owner  = $ticket->user;
+
+        $ticket->messages()->create([
+            'user_id'        => $owner->id,
+            'body'           => 'My card was charged but nothing happened.',
+            'is_staff_reply' => false,
+        ]);
+        $ticket->messages()->create([
+            'user_id'          => $this->makeSuperAdmin()->id,
+            'body'             => 'Internal: possible chargeback fraud, do not refund yet.',
+            'is_staff_reply'   => true,
+            'is_internal_note' => true,
+        ]);
+
+        $this->actingAs($owner)
+            ->get('/dashboard/tickets/'.$ticket->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Tickets/Show')
+                ->has('ticket.messages', 1)
+                ->where('ticket.messages.0.is_staff', false)
+            )
+            ->assertDontSee('possible chargeback fraud', false);
+    }
+
     public function test_contact_renders_the_inertia_page(): void
     {
         $this->get('/contact')

@@ -56,7 +56,12 @@ class TicketController extends Controller
     public function show(SupportTicket $ticket)
     {
         abort_unless($ticket->user_id === Auth::id(), 403);
-        $ticket->load(['messages.user', 'assignee', 'order', 'asset', 'withdrawal']);
+        // Internal notes are staff-only (Admin\TicketController::internalNote writes
+        // them with is_internal_note=true); they must never reach the ticket owner.
+        $ticket->load([
+            'messages' => fn ($q) => $q->where('is_internal_note', false)->with('user'),
+            'assignee', 'order', 'asset', 'withdrawal',
+        ]);
 
         $links = [];
         if ($ticket->order) {
