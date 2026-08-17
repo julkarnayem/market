@@ -8,6 +8,7 @@ use App\Services\WithdrawalService;
 use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Inertia\Inertia;
 
 class WithdrawalController extends Controller
 {
@@ -18,11 +19,37 @@ class WithdrawalController extends Controller
 
     public function index()
     {
-        $wallet      = Auth::user()->wallet;
-        $withdrawals = Auth::user()->withdrawals()->latest()->paginate(15);
-        $minBdt      = Money::toBdt($this->settings->minWithdrawal());
-        $fee         = $this->settings->withdrawalFee();
-        return view('dashboard.withdrawals', compact('wallet','withdrawals','minBdt','fee'));
+        $wallet    = Auth::user()->wallet;
+        $available = (int) ($wallet?->available_balance ?? 0);
+        $pending   = (int) ($wallet?->pending_balance ?? 0);
+        $minPoisha = $this->settings->minWithdrawal();   // POISHA
+        $minBdt    = Money::toBdt($minPoisha);
+        $fee       = $this->settings->withdrawalFee();   // POISHA
+
+        return Inertia::render('Dashboard/Withdrawals', [
+            'availableFormatted' => Money::format($available),
+            'minBdt'             => $minBdt,
+            'minBdtFormatted'    => number_format($minBdt, 2),
+            'feeFormatted'       => Money::format($fee),
+            'feeBdt'             => Money::toBdt($fee),
+            'feeBdtFormatted'    => number_format(Money::toBdt($fee), 2),
+            'hasPending'         => $pending > 0,
+            'pendingFormatted'   => Money::format($pending),
+            'canWithdraw'        => $available >= $minPoisha,
+            'maxBdt'             => Money::toBdt($available),
+            'withdrawals'        => Auth::user()->withdrawals()->latest()->paginate(15)
+                ->through(fn ($w) => [
+                    'id'               => $w->id,
+                    'amount_formatted' => Money::format($w->amount),
+                    'fee_formatted'    => Money::format($w->fee),
+                    'net_formatted'    => Money::format($w->net_amount),
+                    'provider'         => $w->mfs_provider,
+                    'masked_number'    => $w->maskedNumber(),
+                    'status'           => $w->status->value,
+                    'date'             => $w->created_at->format('d M Y'),
+                    'rejection_reason' => $w->rejection_reason,
+                ]),
+        ]);
     }
 
     public function store(Request $request)
