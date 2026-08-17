@@ -386,6 +386,32 @@ class InertiaMigrationTest extends TestCase
             );
     }
 
+    /**
+     * Admin/Payments/Index.vue reads a whitelisted `payments` paginator, the
+     * echoed `filters` (search box + status select) and a `statuses` option list.
+     * index() has no authorize() — the `admin` middleware is enough. Payment has
+     * no factory (and the Order FK it needs has a broken one too — see
+     * [[market-pre-existing-issues]]), so this asserts the render + filter
+     * contract against an empty result set; vue-tsc covers the row shape.
+     */
+    public function test_admin_payments_index_renders_the_filterable_list(): void
+    {
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/payments?status=refunded&q=ORD-9')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Payments/Index')
+                ->has('payments.data')
+                ->where('filters.status', 'refunded')
+                ->where('filters.q', 'ORD-9')
+                ->has('statuses', 5)
+                ->has('statuses.0', fn (Assert $s) => $s
+                    ->where('value', 'pending')
+                    ->where('label', 'Pending')
+                )
+            );
+    }
+
     public function test_contact_renders_the_inertia_page(): void
     {
         $this->get('/contact')
