@@ -40,7 +40,22 @@ class DashboardController extends Controller
         $user     = Auth::user();
         $current  = $user->verifications()->latest()->first();
         $history  = $user->verifications()->latest()->get();
-        return view('dashboard.verification', compact('user','current','history'));
+
+        return Inertia::render('Dashboard/Verification', [
+            'current' => $current ? [
+                'reviewed_at'      => $current->reviewed_at?->format('d M Y'),
+                'submitted_ago'    => $current->submitted_at?->diffForHumans(),
+                'rejection_reason' => $current->rejection_reason,
+            ] : null,
+            'history' => $history->map(fn ($v) => [
+                'attempt_number'   => $v->attempt_number,
+                'document_type'    => $v->document_type,
+                'submitted_at'     => $v->submitted_at?->format('d M Y, H:i'),
+                'rejection_reason' => $v->rejection_reason,
+                'status'           => $v->status,
+            ])->values(),
+            'maxDob' => now()->subYears(18)->format('Y-m-d'),
+        ]);
     }
 
     public function submitVerification(
