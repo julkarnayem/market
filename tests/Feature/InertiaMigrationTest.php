@@ -9,6 +9,7 @@ use App\Models\CategoryAttribute;
 use App\Models\Conversation;
 use App\Models\Dispute;
 use App\Models\Favorite;
+use App\Models\MessageReport;
 use App\Models\Order;
 use App\Models\PhoneOtp;
 use App\Models\Promotion;
@@ -1184,6 +1185,113 @@ class InertiaMigrationTest extends TestCase
                 ->where('filters.status', 'failed')
                 ->has('logs.data', 1)
             );
+    }
+
+    private function seedMessageReport(array $overrides = []): MessageReport
+    {
+        $reporter = User::factory()->create(['name' => 'Rasel Reporter']);
+        $sender   = User::factory()->create(['name' => 'Sadia Sender']);
+
+        $conversation = Conversation::create(['type' => 'order', 'last_message_at' => now()]);
+        $conversation->participants()->attach([$reporter->id, $sender->id]);
+        $message = $conversation->activeMessages()->create([
+            'sender_user_id' => $sender->id,
+            'body'           => 'Let us finish this deal outside the platform to save fees.',
+        ]);
+
+        return MessageReport::create(array_merge([
+            'message_id'  => $message->id,
+            'reporter_id' => $reporter->id,
+            'reason'      => 'scam',
+            'description' => 'Trying to move the transaction off-platform.',
+            'status'      => 'pending',
+        ], $overrides));
+    }
+
+    /**
+     * Admin/MessageReports/Index.vue reads a whitelisted `reports` paginator, the
+     * echoed `filters.status` (active tab, defaulting to 'pending') and a `tabs`
+     * option list. index() authorizes `disputes.manage`, so it needs
+     * makeSuperAdmin(); an order-less conversation reports a null order link.
+     */
+    public function test_admin_message_reports_index_renders_the_tabbed_list(): void
+    {
+        $this->seedMessageReport();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/message-reports')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/MessageReports/Index')
+                ->where('filters.status', 'pending')
+                ->has('tabs', 5)
+                ->has('tabs.0', fn (Assert $t) => $t
+                    ->where('value', 'pending')
+                    ->where('label', 'Pending')
+                )
+                ->has('reports.data', 1)
+                ->has('reports.data.0', fn (Assert $r) => $r
+                    ->where('reporter', 'Rasel Reporter')
+                    ->where('sender', 'Sadia Sender')
+                    ->where('reason', 'Scam')
+                    ->where('status', 'pending')
+                    ->where('order_number', null)
+                    ->where('order_url', null)
+                    ->etc()
+                )
+            );
+    }
+
+    /** The page authorizes `disputes.manage`; a bare admin 403s. */
+    public function test_admin_message_reports_index_requires_the_manage_permission(): void
+    {
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/message-reports')
+            ->assertForbidden();
+    }
+
+    /** The status filter follows ?status=; a pending report shows only where it belongs. */
+    public function test_admin_message_reports_index_filters_by_status(): void
+    {
+        $this->seedMessageReport(); // pending
+        $this->actingAs($this->makeSuperAdmin());
+
+        // A different tab hides it.
+        $this->get('/admin/message-reports?status=dismissed')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'dismissed')
+                ->has('reports.data', 0)
+            );
+
+        // ?status=all surfaces it.
+        $this->get('/admin/message-reports?status=all')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'all')
+                ->has('reports.data', 1)
+            );
+    }
+
+    /**
+     * review() is a pure DB write + audit-log entries (no SMS/Telegram), so this is
+     * a full round-trip: a dismissed report flips to 'dismissed', records the
+     * reviewer, and flashes success. Authorizes `disputes.manage`.
+     */
+    public function test_admin_can_review_a_message_report(): void
+    {
+        $report = $this->seedMessageReport();
+        $admin  = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->from('/admin/message-reports')
+            ->post('/admin/message-reports/'.$report->id.'/review', ['action' => 'dismiss'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $fresh = $report->fresh();
+        $this->assertSame('dismissed', $fresh->status);
+        $this->assertSame($admin->id, $fresh->reviewed_by);
     }
 
     public function test_contact_renders_the_inertia_page(): void
