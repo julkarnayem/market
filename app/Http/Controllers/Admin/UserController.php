@@ -4,8 +4,9 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Services\AuditLogger;
+use App\Support\Money;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
+use Inertia\Inertia;
 
 class UserController extends Controller
 {
@@ -14,6 +15,10 @@ class UserController extends Controller
     public function index()
     {
         $this->authorize('users.view');
+
+        $status       = request('status', 'all');
+        $verification = request('verification', 'all');
+
         $users = User::query()
             ->doesntHave('roles')                      // marketplace users only
             ->when(request('q'), fn($q) => $q->where(fn($u) =>
@@ -21,22 +26,71 @@ class UserController extends Controller
                   ->orWhere('email','like','%'.request('q').'%')
                   ->orWhere('phone','like','%'.request('q').'%')
                   ->orWhere('username','like','%'.request('q').'%')))
-            ->when(request('status'), fn($q) => $q->where('status',request('status')))
-            ->when(request('verification'), fn($q) => $q->where('verification_status',request('verification')))
-            ->withCount(['listings','purchases','sales'])
-            ->latest()->paginate(25);
+            ->when($status !== 'all', fn($q) => $q->where('status', $status))
+            ->when($verification !== 'all', fn($q) => $q->where('verification_status', $verification))
+            ->latest()
+            ->paginate(25)
+            ->withQueryString();
 
-        return view('admin.users', compact('users'));
+        return Inertia::render('Admin/Users/Index', [
+            'users' => $users->through(fn (User $u) => [
+                'id'           => $u->id,
+                'name'         => $u->name,
+                'email'        => $u->email,
+                'initial'      => strtoupper(substr($u->name, 0, 1)),
+                'status'       => $u->status?->value ?? '—',
+                'verification' => $u->verification_status?->value ?? '—',
+                'joined'       => $u->created_at->format('d M Y'),
+                'last_login'   => $u->last_login_at?->diffForHumans() ?? '—',
+                'url'          => route('admin.users.show', $u),
+            ]),
+            'filters' => [
+                'q'            => (string) request('q', ''),
+                'status'       => $status,
+                'verification' => $verification,
+            ],
+            'statuses' => array_map(
+                fn ($s) => ['value' => $s, 'label' => ucfirst($s)],
+                ['active', 'suspended', 'restricted'],
+            ),
+            'verifications' => [
+                ['value' => 'approved',      'label' => 'Verified'],
+                ['value' => 'pending',       'label' => 'Pending'],
+                ['value' => 'not_submitted', 'label' => 'Not submitted'],
+            ],
+        ]);
     }
 
     public function show(User $user)
     {
         $this->authorize('users.view');
-        $user->load('wallet','roles','verifications');
-        $recentOrders = $user->purchases()->with('asset','seller')->latest()->limit(5)->get();
-        $recentSales  = $user->sales()->with('asset','buyer')->latest()->limit(5)->get();
-        $tickets      = $user->supportTickets()->latest()->limit(5)->get();
-        return view('admin.users-show', compact('user','recentOrders','recentSales','tickets'));
+        $user->load('wallet')->loadCount(['listings', 'purchases', 'sales']);
+
+        return Inertia::render('Admin/Users/Show', [
+            'user' => [
+                'id'           => $user->id,
+                'name'         => $user->name,
+                'username'     => $user->username,
+                'email'        => $user->email,
+                'phone'        => $user->phone ?? '—',
+                'joined'       => $user->created_at->format('d M Y'),
+                'last_login'   => $user->last_login_at?->diffForHumans() ?? '—',
+                'status'       => $user->status?->value ?? '—',
+                'verification' => $user->verification_status?->value ?? '—',
+                // Staff accounts are managed elsewhere; the suspend action 403s on
+                // them (see suspend()), so the UI hides the control for admins.
+                'is_admin'     => $user->isAdmin(),
+            ],
+            'wallet' => [
+                'available_formatted' => Money::format((int) ($user->wallet?->available_balance ?? 0)),
+                'pending_formatted'   => Money::format((int) ($user->wallet?->pending_balance ?? 0)),
+            ],
+            'counts' => [
+                'listings'  => $user->listings_count,
+                'purchases' => $user->purchases_count,
+                'sales'     => $user->sales_count,
+            ],
+        ]);
     }
 
     public function suspend(Request $request, User $user)

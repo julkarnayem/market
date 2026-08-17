@@ -144,6 +144,20 @@ class InertiaMigrationTest extends TestCase
     }
 
     /**
+     * A super-admin — holds the seeded `admin` role, which Gate::before grants
+     * every ability. Needed for pages that authorize a specific permission (e.g.
+     * `users.view`) rather than only passing the `admin` middleware; makeAdmin()'s
+     * uniquely-named role carries no permissions and would 403 on those.
+     */
+    private function makeSuperAdmin(): User
+    {
+        $user = User::factory()->create();
+        $user->roles()->attach(Role::where('name', 'admin')->value('id'));
+
+        return $user;
+    }
+
+    /**
      * Admin/Orders/Index.vue reads a whitelisted `orders` paginator, the echoed
      * `filters` (so the search box + status select follow the URL) and a
      * `statuses` option list.
@@ -186,6 +200,96 @@ class InertiaMigrationTest extends TestCase
                     ->where('label', 'Pending')
                 )
             );
+    }
+
+    /**
+     * Admin/Users/Index.vue reads a whitelisted `users` paginator, the echoed
+     * `filters` (search + status + verification, each defaulting to 'all') and the
+     * `statuses` / `verifications` option lists that drive the two selects.
+     * Index authorizes `users.view`, so it needs a super-admin, not makeAdmin().
+     */
+    public function test_admin_users_index_renders_the_filterable_list(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/users?status=suspended&verification=pending&q=jane')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Users/Index')
+                ->has('users.data')
+                ->where('filters.status', 'suspended')
+                ->where('filters.verification', 'pending')
+                ->where('filters.q', 'jane')
+                ->has('statuses', 3)
+                ->has('statuses.0', fn (Assert $s) => $s
+                    ->where('value', 'active')
+                    ->where('label', 'Active')
+                )
+                ->has('verifications', 3)
+                ->has('verifications.0', fn (Assert $v) => $v
+                    ->where('value', 'approved')
+                    ->where('label', 'Verified')
+                )
+            );
+    }
+
+    /**
+     * Show whitelists the profile, formats wallet money server-side (a walletless
+     * member still gets a well-formed zero) and ships the relationship counts.
+     */
+    public function test_admin_users_show_renders_the_profile(): void
+    {
+        $member = User::factory()->create(['name' => 'Jane Buyer']);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/users/'.$member->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Users/Show')
+                ->where('user.id', $member->id)
+                ->where('user.name', 'Jane Buyer')
+                ->where('user.status', 'active')
+                ->where('user.verification', 'not_submitted')
+                ->where('user.is_admin', false)
+                ->where('wallet.available_formatted', '৳0.00')
+                ->where('wallet.pending_formatted', '৳0.00')
+                ->has('counts', fn (Assert $c) => $c
+                    ->where('listings', 0)
+                    ->where('purchases', 0)
+                    ->where('sales', 0)
+                )
+            );
+    }
+
+    /**
+     * The suspend action is functional now — the Blade form sent no reason and
+     * 422'd. It requires a reason, flips the status to suspended and redirects
+     * back with the flash the shared prop surfaces.
+     */
+    public function test_admin_can_suspend_a_marketplace_user_with_a_reason(): void
+    {
+        $member = User::factory()->create();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/users/'.$member->id)
+            ->post('/admin/users/'.$member->id.'/suspend', ['reason' => 'Fraudulent activity'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->assertSame('suspended', $member->fresh()->status->value);
+    }
+
+    /** Suspend still validates: an empty reason comes back as a field error. */
+    public function test_admin_users_suspend_requires_a_reason(): void
+    {
+        $member = User::factory()->create();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/users/'.$member->id)
+            ->post('/admin/users/'.$member->id.'/suspend', ['reason' => ''])
+            ->assertRedirect('/admin/users/'.$member->id)
+            ->assertSessionHasErrors('reason');
+
+        $this->assertSame('active', $member->fresh()->status->value);
     }
 
     public function test_contact_renders_the_inertia_page(): void
