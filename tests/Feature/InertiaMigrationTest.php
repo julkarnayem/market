@@ -9,6 +9,7 @@ use App\Models\PhoneOtp;
 use App\Models\User;
 use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -69,15 +70,16 @@ class InertiaMigrationTest extends TestCase
     /**
      * Coexistence guard: Blade and Inertia must keep working side by side.
      * Repoint this at a still-Blade page each time its target migrates —
-     * /marketplace, /dashboard, /dashboard/favorites, /dashboard/wallet and
-     * /dashboard/promotions have all already passed through here.
+     * /marketplace, /dashboard, /dashboard/favorites, /dashboard/wallet,
+     * /dashboard/promotions and /dashboard/notifications have all already
+     * passed through here.
      */
     public function test_unmigrated_blade_pages_still_render(): void
     {
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->get('/dashboard/notifications')
+            ->get('/dashboard/tickets')
             ->assertOk()
             ->assertDontSee('data-page', false);
     }
@@ -791,6 +793,40 @@ class InertiaMigrationTest extends TestCase
             );
     }
 
+    /**
+     * Notifications ship a whitelist: the server maps each DatabaseNotification's
+     * data bag to a title/message and derives the emoji from the type prefix, so
+     * the client never re-implements that mapping. unreadCount drives the tab badge.
+     */
+    public function test_dashboard_notifications_renders_the_inertia_page(): void
+    {
+        $user = User::factory()->create();
+        $user->notifications()->create([
+            'id'      => (string) Str::uuid(),
+            'type'    => 'App\\Notifications\\OrderPlaced',
+            'data'    => ['type' => 'order.placed', 'title' => 'Order placed', 'message' => 'A buyer placed an order.'],
+            'read_at' => null,
+        ]);
+
+        $this->actingAs($user)
+            ->get('/dashboard/notifications')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Notifications/Index')
+                ->where('tab', 'all')
+                ->where('unreadCount', 1)
+                ->has('notifications.data', 1)
+                ->has('notifications.data.0', fn (Assert $n) => $n
+                    ->where('title', 'Order placed')
+                    ->where('message', 'A buyer placed an order.')
+                    ->where('icon', '📦') // order.* -> 📦, mapped server-side
+                    ->where('is_read', false)
+                    ->has('id')
+                    ->has('created_human')
+                )
+            );
+    }
+
     #[DataProvider('dashboardRouteProvider')]
     public function test_dashboard_pages_require_authentication(string $path): void
     {
@@ -803,6 +839,7 @@ class InertiaMigrationTest extends TestCase
             'overview' => ['/dashboard'],
             'settings' => ['/dashboard/settings'],
             'listings-create' => ['/dashboard/listings/create'],
+            'notifications' => ['/dashboard/notifications'],
         ];
     }
 }
