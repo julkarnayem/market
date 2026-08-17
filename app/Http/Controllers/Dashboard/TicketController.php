@@ -3,9 +3,12 @@ namespace App\Http\Controllers\Dashboard;
 
 use App\Http\Controllers\Controller;
 use App\Models\SupportTicket;
+use App\Models\SupportTicketMessage;
 use App\Services\TicketService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Str;
+use Inertia\Inertia;
 
 class TicketController extends Controller
 {
@@ -14,11 +17,24 @@ class TicketController extends Controller
     public function index()
     {
         $tickets = Auth::user()->supportTickets()
-            ->withCount('messages')->latest('last_reply_at')->paginate(15);
-        return view('dashboard.tickets', compact('tickets'));
+            ->latest('last_reply_at')->paginate(15)->withQueryString();
+
+        return Inertia::render('Dashboard/Tickets/Index', [
+            'tickets' => $tickets->through(fn (SupportTicket $t) => [
+                'id'             => $t->id,
+                'subject'        => $t->subject,
+                'status'         => $t->status->value,
+                'priority_label' => ucfirst($t->priority),
+                'priority_color' => $t->priorityColor(),
+                'updated_human'  => $t->updated_at->diffForHumans(),
+            ]),
+        ]);
     }
 
-    public function create() { return view('dashboard.tickets-create'); }
+    public function create()
+    {
+        return Inertia::render('Dashboard/Tickets/Create');
+    }
 
     public function store(Request $request)
     {
@@ -40,8 +56,40 @@ class TicketController extends Controller
     public function show(SupportTicket $ticket)
     {
         abort_unless($ticket->user_id === Auth::id(), 403);
-        $ticket->load(['messages.user','assignee']);
-        return view('dashboard.tickets-show', compact('ticket'));
+        $ticket->load(['messages.user', 'assignee', 'order', 'asset', 'withdrawal']);
+
+        $links = [];
+        if ($ticket->order) {
+            $links[] = ['icon' => '📦', 'color' => 'brand', 'label' => 'Order '.$ticket->order->order_number, 'href' => route('dashboard.orders.show', $ticket->order)];
+        }
+        if ($ticket->asset) {
+            $links[] = ['icon' => '🏷️', 'color' => 'slate', 'label' => Str::limit($ticket->asset->title, 40), 'href' => route('marketplace.show', $ticket->asset->slug)];
+        }
+        if ($ticket->withdrawal) {
+            $links[] = ['icon' => '🏦', 'color' => 'mint', 'label' => 'Withdrawal #'.$ticket->withdrawal_id, 'href' => route('dashboard.withdrawals')];
+        }
+
+        return Inertia::render('Dashboard/Tickets/Show', [
+            'ticket' => [
+                'id'             => $ticket->id,
+                'reference'      => $ticket->reference,
+                'subject'        => $ticket->subject,
+                'status'         => $ticket->status->value,
+                'priority_label' => ucfirst($ticket->priority),
+                'priority_color' => $ticket->priorityColor(),
+                'assignee_name'  => $ticket->assignee?->name,
+                'can_reply'      => $ticket->isOpen(),
+                'links'          => $links,
+                'messages'       => $ticket->messages->map(fn (SupportTicketMessage $m) => [
+                    'id'            => $m->id,
+                    'is_staff'      => (bool) $m->is_staff_reply,
+                    'author'        => $m->is_staff_reply ? 'Support Team' : $m->user->name,
+                    'initial'       => strtoupper(mb_substr($m->user->name, 0, 1)),
+                    'body'          => $m->body,
+                    'created_human' => $m->created_at->diffForHumans(),
+                ])->values(),
+            ],
+        ]);
     }
 
     public function reply(Request $request, SupportTicket $ticket)

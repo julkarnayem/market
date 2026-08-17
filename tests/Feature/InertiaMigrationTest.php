@@ -1,11 +1,13 @@
 <?php
 namespace Tests\Feature;
 
+use App\Enums\TicketStatus;
 use App\Models\Asset;
 use App\Models\Category;
 use App\Models\CategoryAttribute;
 use App\Models\Favorite;
 use App\Models\PhoneOtp;
+use App\Models\SupportTicket;
 use App\Models\User;
 use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
 use Illuminate\Support\Facades\Notification;
@@ -71,15 +73,15 @@ class InertiaMigrationTest extends TestCase
      * Coexistence guard: Blade and Inertia must keep working side by side.
      * Repoint this at a still-Blade page each time its target migrates —
      * /marketplace, /dashboard, /dashboard/favorites, /dashboard/wallet,
-     * /dashboard/promotions and /dashboard/notifications have all already
-     * passed through here.
+     * /dashboard/promotions, /dashboard/notifications and /dashboard/tickets
+     * have all already passed through here.
      */
     public function test_unmigrated_blade_pages_still_render(): void
     {
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->get('/dashboard/tickets')
+            ->get('/dashboard/messages')
             ->assertOk()
             ->assertDontSee('data-page', false);
     }
@@ -827,6 +829,114 @@ class InertiaMigrationTest extends TestCase
             );
     }
 
+    // ── Dashboard support tickets (checkpoint 21) ───────────────────────
+
+    public function test_dashboard_tickets_renders_the_inertia_page(): void
+    {
+        $user = User::factory()->create();
+        SupportTicket::create([
+            'reference'     => 'TKT-20260817-AAA111',
+            'user_id'       => $user->id,
+            'category'      => 'account',
+            'subject'       => 'Cannot access my wallet',
+            'priority'      => 'high',
+            'status'        => TicketStatus::Open,
+            'last_reply_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->get('/dashboard/tickets')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Tickets/Index')
+                ->has('tickets.data', 1)
+                ->has('tickets.data.0', fn (Assert $t) => $t
+                    ->where('subject', 'Cannot access my wallet')
+                    ->where('status', 'open')
+                    ->where('priority_label', 'High')
+                    // priorityColor() owns the mapping: high -> amber.
+                    ->where('priority_color', 'amber')
+                    ->has('id')
+                    ->has('updated_human')
+                )
+            );
+    }
+
+    public function test_dashboard_tickets_create_renders_the_inertia_page(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->get('/dashboard/tickets/create')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->component('Dashboard/Tickets/Create'));
+    }
+
+    /**
+     * Show whitelists the ticket and maps its thread; an Open ticket is
+     * replyable, and with nothing linked the context-links list is empty.
+     */
+    public function test_dashboard_tickets_show_renders_the_thread(): void
+    {
+        $user   = User::factory()->create();
+        $ticket = SupportTicket::create([
+            'reference'     => 'TKT-20260817-BBB222',
+            'user_id'       => $user->id,
+            'category'      => 'account',
+            'subject'       => 'Cannot access my wallet',
+            'priority'      => 'normal',
+            'status'        => TicketStatus::Open,
+            'last_reply_at' => now(),
+        ]);
+        $ticket->messages()->create([
+            'user_id'        => $user->id,
+            'body'           => 'Please help me access my wallet.',
+            'is_staff_reply' => false,
+        ]);
+
+        $this->actingAs($user)
+            ->get("/dashboard/tickets/{$ticket->id}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Tickets/Show')
+                ->where('ticket.reference', 'TKT-20260817-BBB222')
+                ->where('ticket.status', 'open')
+                ->where('ticket.priority_label', 'Normal')
+                ->where('ticket.priority_color', 'brand')
+                ->where('ticket.can_reply', true)
+                ->has('ticket.links', 0)
+                ->has('ticket.messages', 1)
+                ->has('ticket.messages.0', fn (Assert $m) => $m
+                    ->where('is_staff', false)
+                    ->where('author', $user->name)
+                    ->where('body', 'Please help me access my wallet.')
+                    ->has('initial')
+                    ->has('created_human')
+                    ->etc()
+                )
+            );
+    }
+
+    /** The owner check is server-side: a stranger cannot open someone's ticket. */
+    public function test_dashboard_tickets_show_forbids_a_non_owner(): void
+    {
+        $owner  = User::factory()->create();
+        $other  = User::factory()->create();
+        $ticket = SupportTicket::create([
+            'reference'     => 'TKT-20260817-CCC333',
+            'user_id'       => $owner->id,
+            'category'      => 'account',
+            'subject'       => 'Private matter',
+            'priority'      => 'low',
+            'status'        => TicketStatus::Open,
+            'last_reply_at' => now(),
+        ]);
+
+        $this->actingAs($other)
+            ->get("/dashboard/tickets/{$ticket->id}")
+            ->assertForbidden();
+    }
+
     #[DataProvider('dashboardRouteProvider')]
     public function test_dashboard_pages_require_authentication(string $path): void
     {
@@ -840,6 +950,8 @@ class InertiaMigrationTest extends TestCase
             'settings' => ['/dashboard/settings'],
             'listings-create' => ['/dashboard/listings/create'],
             'notifications' => ['/dashboard/notifications'],
+            'tickets' => ['/dashboard/tickets'],
+            'tickets-create' => ['/dashboard/tickets/create'],
         ];
     }
 }
