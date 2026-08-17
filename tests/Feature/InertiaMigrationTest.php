@@ -6,7 +6,9 @@ use App\Models\Asset;
 use App\Models\Category;
 use App\Models\CategoryAttribute;
 use App\Models\Conversation;
+use App\Models\Dispute;
 use App\Models\Favorite;
+use App\Models\Order;
 use App\Models\PhoneOtp;
 use App\Models\Role;
 use App\Models\SellerVerification;
@@ -534,6 +536,161 @@ class InertiaMigrationTest extends TestCase
             ->assertSessionHasErrors('reason');
 
         $this->assertSame(5000, $wallet->fresh()->available_balance);
+    }
+
+    // ── Admin disputes (checkpoint 31) ───────────────────────────────────
+
+    /**
+     * A resolvable (open) dispute over a real order. Order's factory is broken
+     * (see [[market-pre-existing-issues]]) so the order graph is built with
+     * create(); Asset::factory() works and supplies the seller-owned listing.
+     * ৳2,500.00 buyer_total / ৳2,250.00 seller_earning in poisha.
+     */
+    private function seedDispute(array $disputeOverrides = []): Dispute
+    {
+        $category = Category::create([
+            'name' => 'Disputed Goods', 'slug' => 'disputed-goods', 'is_active' => true, 'position' => 1,
+        ]);
+        $seller = User::factory()->create(['name' => 'Selim Seller']);
+        $buyer  = User::factory()->create(['name' => 'Bilkis Buyer']);
+        $asset  = Asset::factory()->create([
+            'user_id' => $seller->id, 'category_id' => $category->id, 'title' => 'Disputed Page',
+        ]);
+
+        $order = Order::create([
+            'reference'           => 'REF-DSP-'.$buyer->id,
+            'order_number'        => 'ORD-DSP-'.$buyer->id,
+            'buyer_user_id'       => $buyer->id,
+            'seller_user_id'      => $seller->id,
+            'asset_id'            => $asset->id,
+            'quantity'            => 1,
+            'unit_price'          => 250000,
+            'subtotal'            => 250000,
+            'seller_fee_bp'       => 1000,
+            'seller_fee_amount'   => 25000,
+            'platform_commission' => 25000,
+            'buyer_total'         => 250000,
+            'seller_earning'      => 225000,
+            'currency'            => 'BDT',
+        ]);
+
+        return Dispute::create(array_merge([
+            'order_id'  => $order->id,
+            'opened_by' => $buyer->id,
+            'reason'    => 'Item not as described.',
+            'status'    => 'open',
+        ], $disputeOverrides));
+    }
+
+    /**
+     * Admin/Disputes/Index.vue reads a whitelisted `disputes` paginator, the echoed
+     * `filters.status` (the active tab, defaulting to 'open') and a `tabs` option
+     * list. index() has no authorize() — the `admin` middleware is enough.
+     */
+    public function test_admin_disputes_index_renders_the_tabbed_list(): void
+    {
+        $this->seedDispute();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/disputes')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Disputes/Index')
+                ->where('filters.status', 'open')
+                ->has('tabs', 6)
+                ->has('tabs.0', fn (Assert $t) => $t
+                    ->where('value', 'open')
+                    ->where('label', 'Open')
+                )
+                ->has('disputes.data', 1)
+                ->has('disputes.data.0', fn (Assert $d) => $d
+                    ->where('buyer', 'Bilkis Buyer')
+                    ->where('seller', 'Selim Seller')
+                    ->where('order_total', '৳2,500.00')
+                    ->where('status', 'open')
+                    ->where('status_label', 'Open')
+                    ->etc()
+                )
+            );
+    }
+
+    /**
+     * show() whitelists the dispute + order summary and formats money server-side.
+     * An open dispute reports is_open (the Vue swaps in the resolution panel), and
+     * with nothing attached the evidence + order-messages lists are empty.
+     */
+    public function test_admin_disputes_show_renders_the_review(): void
+    {
+        $dispute = $this->seedDispute();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/disputes/'.$dispute->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Disputes/Show')
+                ->where('dispute.status', 'open')
+                ->where('dispute.is_open', true)
+                ->where('dispute.reason', 'Item not as described.')
+                ->where('dispute.resolution_type', null)
+                ->where('order.buyer', 'Bilkis Buyer')
+                ->where('order.seller', 'Selim Seller')
+                ->where('order.buyer_total', '৳2,500.00')
+                ->where('order.seller_earning', '৳2,250.00')
+                ->has('order.buyer_total_bdt')
+                ->has('evidence', 0)
+                ->has('messages', 0)
+            );
+    }
+
+    /**
+     * The full-refund resolution is a real money movement (DisputeService credits
+     * the buyer via WalletService — pure DB, no notifications), so this is a full
+     * round-trip: the buyer's wallet gains the whole buyer_total and the dispute is
+     * marked resolved. Authorizes disputes.manage, so it needs makeSuperAdmin().
+     */
+    public function test_admin_can_resolve_a_dispute_with_a_full_refund(): void
+    {
+        $dispute = $this->seedDispute();
+        $buyerId = $dispute->order->buyer_user_id;
+        Wallet::create([
+            'user_id' => $buyerId, 'available_balance' => 0, 'pending_balance' => 0, 'currency' => 'BDT',
+        ]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/disputes/'.$dispute->id)
+            ->post('/admin/disputes/'.$dispute->id.'/full-refund', [
+                'note' => 'Buyer proved the page was misrepresented.',
+            ])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        // ৳2,500.00 buyer_total credited back to the buyer.
+        $this->assertSame(250000, Wallet::where('user_id', $buyerId)->value('available_balance'));
+
+        $fresh = $dispute->fresh();
+        $this->assertSame('resolved', $fresh->status->value);
+        $this->assertSame('full_refund', $fresh->resolution_type);
+        $this->assertSame(250000, $fresh->resolution_amount);
+    }
+
+    /**
+     * Updating a dispute's status is a pure DB write (no wallet movement); the
+     * PATCH flips the status and flashes success. Authorizes disputes.manage.
+     */
+    public function test_admin_can_update_a_dispute_status(): void
+    {
+        $dispute = $this->seedDispute();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/disputes/'.$dispute->id)
+            ->patch('/admin/disputes/'.$dispute->id.'/status', [
+                'status' => 'under_review',
+                'note'   => 'Escalated to a senior agent for review.',
+            ])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->assertSame('under_review', $dispute->fresh()->status->value);
     }
 
     public function test_contact_renders_the_inertia_page(): void
