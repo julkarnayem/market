@@ -412,6 +412,30 @@ class InertiaMigrationTest extends TestCase
             );
     }
 
+    /**
+     * Admin/Offers/Index.vue reads a whitelisted `offers` paginator, the echoed
+     * `filters` (a single status select — offers have no search box) and a
+     * `statuses` option list. index() has no authorize(). Offer has no factory,
+     * so — like Orders/Payments — this asserts the render + filter contract
+     * against an empty result set; vue-tsc covers the row shape.
+     */
+    public function test_admin_offers_index_renders_the_filterable_list(): void
+    {
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/offers?status=accepted')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Offers/Index')
+                ->has('offers.data')
+                ->where('filters.status', 'accepted')
+                ->has('statuses', 4)
+                ->has('statuses.0', fn (Assert $s) => $s
+                    ->where('value', 'pending')
+                    ->where('label', 'Pending')
+                )
+            );
+    }
+
     public function test_contact_renders_the_inertia_page(): void
     {
         $this->get('/contact')
