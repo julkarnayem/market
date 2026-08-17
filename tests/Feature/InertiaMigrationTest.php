@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\Favorite;
 use App\Models\PhoneOtp;
 use App\Models\Role;
+use App\Models\SellerVerification;
 use App\Models\SupportTicket;
 use App\Models\User;
 use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
@@ -290,6 +291,99 @@ class InertiaMigrationTest extends TestCase
             ->assertSessionHasErrors('reason');
 
         $this->assertSame('active', $member->fresh()->status->value);
+    }
+
+    /**
+     * A seller verification fixture. SellerVerification has no factory, so build
+     * it with create(); only user_id is strictly required. nid_number is set (and
+     * encrypted at rest by the model) precisely so the show test can prove it
+     * never reaches the client.
+     */
+    private function seedVerification(array $overrides = []): SellerVerification
+    {
+        $applicant = User::factory()->create(['name' => 'Kamrul Seller']);
+
+        return SellerVerification::create(array_merge([
+            'user_id'        => $applicant->id,
+            'document_type'  => 'nid',
+            'nid_number'     => '1990123456789',
+            'date_of_birth'  => '1990-05-15',
+            'document_path'  => 'verifications/'.$applicant->id.'/front.jpg',
+            'status'         => 'pending',
+            'submitted_at'   => now(),
+            'attempt_number' => 1,
+        ], $overrides));
+    }
+
+    /**
+     * Admin/Verification/Index.vue reads a whitelisted `verifications` paginator,
+     * the echoed `tab` (the status filter the tab links follow) and a `tabs`
+     * option list. index() has no authorize() — the `admin` middleware is enough,
+     * so makeAdmin() suffices here.
+     */
+    public function test_admin_verification_index_renders_the_tabbed_list(): void
+    {
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/verification?tab=approved')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Verification/Index')
+                ->has('verifications.data')
+                ->where('tab', 'approved')
+                ->has('tabs', 3)
+                ->has('tabs.0', fn (Assert $t) => $t
+                    ->where('value', 'pending')
+                    ->where('label', 'Pending')
+                )
+            );
+    }
+
+    /**
+     * show() whitelists the applicant + review meta and maps document_type to a
+     * label. Two security guarantees are asserted: the encrypted NID is never
+     * serialized, and a reviewer who is not the platform owner gets neither the
+     * canViewDocuments flag nor the streamable document URL.
+     */
+    public function test_admin_verification_show_renders_the_review_without_leaking_the_nid(): void
+    {
+        $verification = $this->seedVerification();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/verification/'.$verification->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Verification/Show')
+                ->where('verification.user_name', 'Kamrul Seller')
+                ->where('verification.type_label', 'National ID (NID)')
+                ->where('verification.status', 'pending')
+                ->where('verification.is_pending', true)
+                ->where('verification.date_of_birth', '15 May 1990')
+                ->where('verification.has_document', true)
+                // The NID must never reach the browser, encrypted or otherwise.
+                ->missing('verification.nid_number')
+                // makeSuperAdmin() holds the `admin` role (super-admin via
+                // Gate::before) but not the literal `super_admin` role, so it
+                // still cannot view the ID documents.
+                ->where('canViewDocuments', false)
+                ->where('verification.document_url', null)
+            );
+    }
+
+    /** Only the platform owner (the seeded `super_admin` role) may view the ID documents. */
+    public function test_admin_verification_documents_are_gated_to_the_platform_owner(): void
+    {
+        $verification = $this->seedVerification();
+
+        $owner = User::factory()->create();
+        $owner->roles()->attach(Role::where('name', 'super_admin')->value('id'));
+
+        $this->actingAs($owner)
+            ->get('/admin/verification/'.$verification->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('canViewDocuments', true)
+                ->has('verification.document_url')
+            );
     }
 
     public function test_contact_renders_the_inertia_page(): void
