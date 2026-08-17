@@ -693,6 +693,133 @@ class InertiaMigrationTest extends TestCase
         $this->assertSame('under_review', $dispute->fresh()->status->value);
     }
 
+    // ── Admin: Categories (checkpoint 32) ─────────────────────────────
+
+    /**
+     * Index authorizes `categories.manage`, so it needs a super-admin. The tree
+     * is a flat list of roots, each carrying its children (with attr counts).
+     */
+    public function test_admin_categories_index_renders_the_tree(): void
+    {
+        $root = Category::create([
+            'name' => 'Social Media', 'slug' => 'social-media', 'icon' => '📱',
+            'is_active' => true, 'position' => 1,
+        ]);
+        Category::create([
+            'name' => 'Instagram', 'slug' => 'instagram', 'parent_id' => $root->id,
+            'is_active' => true, 'position' => 1,
+        ]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/categories')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Categories/Index')
+                ->has('categories', 1)
+                ->has('categories.0', fn (Assert $c) => $c
+                    ->where('name', 'Social Media')
+                    ->where('icon', '📱')
+                    ->has('children', 1)
+                    ->where('children.0.name', 'Instagram')
+                    ->etc()
+                )
+            );
+    }
+
+    /** The manage permission is required; a bare admin (no permissions) is denied. */
+    public function test_categories_require_the_manage_permission(): void
+    {
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/categories')
+            ->assertForbidden();
+    }
+
+    /** Create.vue's parent <select> is fed the active roots as {id,name}. */
+    public function test_admin_categories_create_renders_the_form(): void
+    {
+        Category::create(['name' => 'Apps', 'slug' => 'apps', 'is_active' => true, 'position' => 1]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/categories/create')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Categories/Create')
+                ->has('parents', 1)
+                ->where('parents.0.name', 'Apps')
+            );
+    }
+
+    /** Edit.vue pre-fills the details form and lists the category's attributes. */
+    public function test_admin_categories_edit_renders_the_form_with_its_attributes(): void
+    {
+        $category = Category::create(['name' => 'Gaming', 'slug' => 'gaming', 'is_active' => true]);
+        $category->attributes()->create([
+            'key' => 'platform', 'label' => 'Platform', 'type' => 'select',
+            'options' => ['PC', 'Console'], 'is_active' => true, 'position' => 0,
+        ]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/categories/'.$category->id.'/edit')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Categories/Edit')
+                ->where('category.id', $category->id)
+                ->where('category.name', 'Gaming')
+                ->has('parents')
+                ->has('attributes', 1)
+                ->where('attributes.0.key', 'platform')
+                ->where('attributes.0.type', 'select')
+                ->has('attributeTypes')
+            );
+    }
+
+    /** store() slugs the name, persists, and redirects to the index with success. */
+    public function test_admin_can_create_a_category(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/categories/create')
+            ->post('/admin/categories', [
+                'name'        => 'Digital Goods',
+                'icon'        => '💾',
+                'description' => 'Downloadable digital products.',
+                'position'    => 3,
+                'is_active'   => true,
+            ])
+            ->assertRedirect(route('admin.categories'))
+            ->assertSessionHas('success');
+
+        $this->assertDatabaseHas('categories', [
+            'name'     => 'Digital Goods',
+            'slug'     => 'digital-goods',
+            'position' => 3,
+        ]);
+    }
+
+    /** storeAttribute() attaches a dynamic attribute and flashes back with success. */
+    public function test_admin_can_add_a_dynamic_attribute_to_a_category(): void
+    {
+        $category = Category::create(['name' => 'Websites', 'slug' => 'websites', 'is_active' => true]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/categories/'.$category->id.'/edit')
+            ->post('/admin/categories/'.$category->id.'/attributes', [
+                'label'    => 'Monthly Revenue',
+                'key'      => 'monthly_revenue',
+                'type'     => 'number',
+                'unit'     => '/month',
+                'position' => 0,
+            ])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->assertDatabaseHas('category_attributes', [
+            'category_id' => $category->id,
+            'key'         => 'monthly_revenue',
+            'label'       => 'Monthly Revenue',
+            'type'        => 'number',
+        ]);
+    }
+
     public function test_contact_renders_the_inertia_page(): void
     {
         $this->get('/contact')

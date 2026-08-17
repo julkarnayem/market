@@ -7,6 +7,7 @@ use App\Models\CategoryAttribute;
 use App\Services\AuditLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Inertia\Inertia;
 
 class CategoryController extends Controller
 {
@@ -16,14 +17,41 @@ class CategoryController extends Controller
     {
         $this->authorize('categories.manage');
         $categories = Category::roots()->with('children.attributes')->orderBy('position')->get();
-        return view('admin.categories.index', compact('categories'));
+
+        return Inertia::render('Admin/Categories/Index', [
+            'categories' => $categories->map(fn (Category $cat) => [
+                'id'            => $cat->id,
+                'name'          => $cat->name,
+                'icon'          => $cat->icon,
+                'position'      => $cat->position,
+                'is_active'     => $cat->is_active,
+                'is_prohibited' => $cat->is_prohibited,
+                'is_restricted' => $cat->is_restricted,
+                'edit_url'      => route('admin.categories.edit', $cat),
+                'children'      => $cat->children->map(fn (Category $sub) => [
+                    'id'            => $sub->id,
+                    'name'          => $sub->name,
+                    'is_active'     => $sub->is_active,
+                    'is_prohibited' => $sub->is_prohibited,
+                    'is_restricted' => $sub->is_restricted,
+                    'attr_count'    => $sub->attributes->count(),
+                    'edit_url'      => route('admin.categories.edit', $sub),
+                ])->all(),
+            ])->all(),
+        ]);
     }
 
     public function create()
     {
         $this->authorize('categories.manage');
         $parents = Category::roots()->active()->orderBy('position')->get();
-        return view('admin.categories.create', compact('parents'));
+
+        return Inertia::render('Admin/Categories/Create', [
+            'parents' => $parents->map(fn (Category $p) => [
+                'id'   => $p->id,
+                'name' => $p->name,
+            ])->all(),
+        ]);
     }
 
     public function store(Request $request)
@@ -48,9 +76,35 @@ class CategoryController extends Controller
     public function edit(Category $category)
     {
         $this->authorize('categories.manage');
-        $parents = Category::roots()->where('id','!=',$category->id)->orderBy('position')->get();
+        $parents = Category::roots()->where('id', '!=', $category->id)->orderBy('position')->get();
         $attrs   = $category->attributes()->orderBy('position')->get();
-        return view('admin.categories.edit', compact('category','parents','attrs'));
+
+        return Inertia::render('Admin/Categories/Edit', [
+            'category' => [
+                'id'            => $category->id,
+                'name'          => $category->name,
+                'parent_id'     => $category->parent_id,
+                'icon'          => $category->icon,
+                'description'   => $category->description,
+                'position'      => $category->position,
+                'is_active'     => $category->is_active,
+                'is_prohibited' => $category->is_prohibited,
+                'is_restricted' => $category->is_restricted,
+            ],
+            'parents' => $parents->map(fn (Category $p) => [
+                'id'   => $p->id,
+                'name' => $p->name,
+            ])->all(),
+            'attributes' => $attrs->map(fn (CategoryAttribute $a) => [
+                'id'          => $a->id,
+                'label'       => $a->label,
+                'key'         => $a->key,
+                'type'        => $a->type,
+                'is_required' => $a->is_required,
+                'is_active'   => $a->is_active,
+            ])->all(),
+            'attributeTypes' => CategoryAttribute::TYPES,
+        ]);
     }
 
     public function update(Request $request, Category $category)
