@@ -11,6 +11,7 @@ use App\Models\Dispute;
 use App\Models\Favorite;
 use App\Models\Order;
 use App\Models\PhoneOtp;
+use App\Models\Promotion;
 use App\Models\Role;
 use App\Models\SellerVerification;
 use App\Models\SupportTicket;
@@ -980,6 +981,110 @@ class InertiaMigrationTest extends TestCase
             ->assertSessionHas('success');
 
         $this->assertSame('suspended', $listing->fresh()->status->value);
+    }
+
+    // ── Admin: Promotions (checkpoint 34) ─────────────────────────────
+
+    /**
+     * An active promotion over a real listing. Promotion has no factory (the model
+     * never applies HasFactory — see [[market-pre-existing-issues]]), so it's built
+     * with create(); Asset::factory() supplies the listing and a named seller owns it.
+     */
+    private function seedPromotion(array $overrides = []): Promotion
+    {
+        $category = Category::create([
+            'name' => 'Promoted Category', 'slug' => 'promoted-category', 'is_active' => true, 'position' => 1,
+        ]);
+        $seller = User::factory()->create(['name' => 'Selim Seller']);
+        $asset  = Asset::factory()->create([
+            'user_id' => $seller->id, 'category_id' => $category->id, 'title' => 'Featured Cooking Page',
+        ]);
+
+        return Promotion::create(array_merge([
+            'asset_id'  => $asset->id,
+            'user_id'   => $seller->id,
+            'seller_id' => $seller->id,
+            'days'      => 7,
+            'price'     => 50000, // poisha -> ৳500.00
+            'currency'  => 'BDT',
+            'starts_at' => now()->subDay(),
+            'ends_at'   => now()->addDays(6),
+            'status'    => 'active',
+            'is_manual' => false,
+        ], $overrides));
+    }
+
+    /**
+     * Admin/Promotions/Index.vue reads a whitelisted `promotions` paginator, the
+     * echoed `filters.status` (the active tab, defaulting to 'active') and a `tabs`
+     * option list. index() has no authorize() — the `admin` middleware is enough.
+     */
+    public function test_admin_promotions_index_renders_the_tabbed_list(): void
+    {
+        $this->seedPromotion();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/promotions')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Promotions/Index')
+                ->where('filters.status', 'active')
+                ->has('tabs', 4)
+                ->has('tabs.0', fn (Assert $t) => $t
+                    ->where('value', 'active')
+                    ->where('label', 'Active')
+                )
+                ->has('promotions.data', 1)
+                ->has('promotions.data.0', fn (Assert $p) => $p
+                    ->where('listing', 'Featured Cooking Page')
+                    ->where('seller', 'Selim Seller')
+                    ->where('type', 'Paid')
+                    ->where('amount', '৳500.00')
+                    ->where('status', 'active')
+                    ->etc()
+                )
+            );
+    }
+
+    /** The status filter follows ?status=; an active promotion shows only where it belongs. */
+    public function test_admin_promotions_index_filters_by_status(): void
+    {
+        $this->seedPromotion(); // active
+        $this->actingAs($this->makeAdmin());
+
+        // A different tab hides it.
+        $this->get('/admin/promotions?status=expired')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'expired')
+                ->has('promotions.data', 0)
+            );
+
+        // ?status=all surfaces it.
+        $this->get('/admin/promotions?status=all')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.status', 'all')
+                ->has('promotions.data', 1)
+            );
+    }
+
+    /**
+     * unfeature() is a pure DB write + an in-app notification (no SMS/Telegram), so
+     * this is a full round-trip: the active promotion flips to cancelled and flashes
+     * success. Authorizes `promotions.feature`, so it needs makeSuperAdmin().
+     */
+    public function test_admin_can_unfeature_a_promotion(): void
+    {
+        $promotion = $this->seedPromotion();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/promotions')
+            ->post('/admin/promotions/'.$promotion->id.'/unfeature')
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->assertSame('cancelled', $promotion->fresh()->status);
     }
 
     public function test_contact_renders_the_inertia_page(): void
