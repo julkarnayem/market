@@ -1,6 +1,7 @@
 <?php
 namespace Tests\Feature;
 
+use App\Enums\AssetStatus;
 use App\Enums\TicketStatus;
 use App\Models\Asset;
 use App\Models\Category;
@@ -818,6 +819,167 @@ class InertiaMigrationTest extends TestCase
             'label'       => 'Monthly Revenue',
             'type'        => 'number',
         ]);
+    }
+
+    // ── Admin: Listings (checkpoint 33) ───────────────────────────────
+
+    /**
+     * A listing owned by a named seller in a given status. Category has no
+     * factory (see [[market-pre-existing-issues]]) so it's built with create();
+     * Asset::factory() works and supplies the rest.
+     */
+    private function seedListing(AssetStatus $status = AssetStatus::PendingReview, array $overrides = []): Asset
+    {
+        $category = Category::create([
+            'name' => 'Listing Category', 'slug' => 'listing-category', 'is_active' => true, 'position' => 1,
+        ]);
+        $seller = User::factory()->create(['name' => 'Selim Seller']);
+
+        return Asset::factory()->create(array_merge([
+            'user_id'     => $seller->id,
+            'category_id' => $category->id,
+            'title'       => 'Established Cooking Page',
+            'price'       => 250000, // poisha -> ৳2,500.00
+            'status'      => $status,
+        ], $overrides));
+    }
+
+    /**
+     * Admin/Listings/Index.vue reads a whitelisted `listings` paginator, the
+     * echoed `filters.tab` (the active tab, defaulting to 'pending_review') and a
+     * `tabs` option list. index() has no authorize() — the `admin` middleware is
+     * enough, so makeAdmin() suffices.
+     */
+    public function test_admin_listings_index_renders_the_tabbed_list(): void
+    {
+        $this->seedListing(AssetStatus::PendingReview);
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/listings')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Listings/Index')
+                ->where('filters.tab', 'pending_review')
+                ->has('tabs', 5)
+                ->has('tabs.0', fn (Assert $t) => $t
+                    ->where('value', 'pending_review')
+                    ->where('label', 'Pending')
+                )
+                ->has('listings.data', 1)
+                ->has('listings.data.0', fn (Assert $l) => $l
+                    ->where('title', 'Established Cooking Page')
+                    ->where('seller', 'Selim Seller')
+                    ->where('price', '৳2,500.00')
+                    ->where('status', 'pending_review')
+                    ->etc()
+                )
+            );
+    }
+
+    /** The tab filter follows ?tab=; a published listing shows only on that tab. */
+    public function test_admin_listings_index_filters_by_tab(): void
+    {
+        $this->seedListing(AssetStatus::Published);
+        $this->actingAs($this->makeAdmin());
+
+        // Default (pending_review) tab: the published listing is filtered out.
+        $this->get('/admin/listings')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->has('listings.data', 0));
+
+        // ?tab=published surfaces it.
+        $this->get('/admin/listings?tab=published')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('filters.tab', 'published')
+                ->has('listings.data', 1)
+            );
+    }
+
+    /**
+     * show() authorizes `listings.view`, so it needs a super-admin. It whitelists
+     * the listing detail (money formatted server-side) and ships empty
+     * image/attribute/edit lists plus a null pendingEdit for a plain listing.
+     */
+    public function test_admin_listings_show_renders_the_review(): void
+    {
+        $listing = $this->seedListing(AssetStatus::PendingReview);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/listings/'.$listing->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Listings/Show')
+                ->where('listing.id', $listing->id)
+                ->where('listing.title', 'Established Cooking Page')
+                ->where('listing.status', 'pending_review')
+                ->where('listing.price', '৳2,500.00')
+                ->where('listing.seller', 'Selim Seller')
+                ->has('listing.marketplace_url')
+                ->has('images', 0)
+                ->has('attributes', 0)
+                ->has('edits', 0)
+                ->where('pendingEdit', null)
+            );
+    }
+
+    /** show() authorizes `listings.view`; a bare admin (no permissions) is denied. */
+    public function test_admin_listings_show_requires_the_view_permission(): void
+    {
+        $listing = $this->seedListing();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/listings/'.$listing->id)
+            ->assertForbidden();
+    }
+
+    /**
+     * Approve is a pure status write + audit log (no notifications), so this is a
+     * full round-trip: a pending listing flips to published and flashes success.
+     * Authorizes `listings.approve`, so it needs makeSuperAdmin().
+     */
+    public function test_admin_can_approve_a_listing(): void
+    {
+        $listing = $this->seedListing(AssetStatus::PendingReview);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/listings/'.$listing->id)
+            ->post('/admin/listings/'.$listing->id.'/approve', ['notes' => 'Looks good.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->assertSame('published', $listing->fresh()->status->value);
+    }
+
+    /** Reject requires a reason: an empty one comes back as a field error, status untouched. */
+    public function test_admin_listings_reject_requires_a_reason(): void
+    {
+        $listing = $this->seedListing(AssetStatus::PendingReview);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/listings/'.$listing->id)
+            ->post('/admin/listings/'.$listing->id.'/reject', ['reason' => ''])
+            ->assertRedirect('/admin/listings/'.$listing->id)
+            ->assertSessionHasErrors('reason');
+
+        $this->assertSame('pending_review', $listing->fresh()->status->value);
+    }
+
+    /**
+     * Suspend is a pure status write + audit log; a published listing flips to
+     * suspended and flashes success. Authorizes `listings.suspend`.
+     */
+    public function test_admin_can_suspend_a_published_listing(): void
+    {
+        $listing = $this->seedListing(AssetStatus::Published);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/listings/'.$listing->id)
+            ->post('/admin/listings/'.$listing->id.'/suspend')
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->assertSame('suspended', $listing->fresh()->status->value);
     }
 
     public function test_contact_renders_the_inertia_page(): void
