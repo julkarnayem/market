@@ -6,6 +6,7 @@ use App\Models\Order;
 use App\Models\Review;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Inertia\Inertia;
 
 class ReviewController extends Controller
 {
@@ -25,7 +26,13 @@ class ReviewController extends Controller
         // No duplicate review
         abort_if(Review::where('order_id', $order->id)->exists(), 403, 'You already reviewed this order.');
 
-        return view('dashboard.orders.review', compact('order'));
+        return Inertia::render('Dashboard/Orders/Review', [
+            'order' => [
+                'id'          => $order->id,
+                'asset_title' => $order->asset->title,
+                'seller_name' => $order->seller->name,
+            ],
+        ]);
     }
 
     public function store(Request $request, Order $order)
