@@ -72,7 +72,7 @@
                     <input type="hidden" name="asset_id" value="{{ $asset->id }}">
                     <input type="hidden" name="quantity" value="{{ $quantity }}">
                     @if($offer)<input type="hidden" name="offer_id" value="{{ $offer->id }}">@endif
-                    <x-button type="submit" class="w-100" size="lg" {{ !$gatewayConfigured ? 'disabled' : '' }}>
+                    <x-button type="submit" class="w-100" size="lg" :disabled="! $gatewayConfigured">
                         Pay {{ \App\Support\Money::format($feeSnap['buyer_total']) }} via UddoktaPay →
                     </x-button>
                 </form>

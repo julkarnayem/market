@@ -89,24 +89,22 @@ class InertiaMigrationTest extends TestCase
 
     /**
      * Coexistence guard: Blade and Inertia must keep working side by side.
-     * Every user-facing dashboard page is Inertia now, so this points at the
-     * still-Blade admin area (audit logs); repoint it as admin pages migrate.
+     * The whole admin area is Inertia now, so this points at /checkout/{slug} —
+     * the only remaining live Blade route. Repoint it if that one migrates.
      * /marketplace, /dashboard, /dashboard/favorites, /dashboard/wallet,
-     * /dashboard/promotions, /dashboard/notifications, /dashboard/tickets and
-     * /dashboard/messages have all already passed through here.
+     * /dashboard/promotions, /dashboard/notifications, /dashboard/tickets,
+     * /dashboard/messages and /admin/audit-logs have all passed through here.
      */
     public function test_unmigrated_blade_pages_still_render(): void
     {
-        $admin = User::factory()->create();
-        $role  = Role::create([
-            'name'          => 'ckpt22-admin-guard',
-            'display_name'  => 'Administrator',
-            'is_admin_role' => true,
-        ]);
-        $admin->roles()->attach($role->id);
+        [, $asset] = $this->seedOneAsset();
 
-        $this->actingAs($admin)
-            ->get('/admin/audit-logs')
+        // A plain buyer: canTransact() only needs an active status, and the
+        // seller comes from AssetFactory so buyer !== asset->user_id.
+        $buyer = User::factory()->create();
+
+        $this->actingAs($buyer)
+            ->get('/checkout/'.$asset->slug)
             ->assertOk()
             ->assertDontSee('data-page', false);
     }
@@ -2892,6 +2890,193 @@ class InertiaMigrationTest extends TestCase
             ->assertSessionHasErrors('promotion_price_5');
 
         $this->assertDatabaseCount('settings', 0);
+    }
+
+    // ── Admin audit logs (checkpoint 44) ─────────────────────────────────
+
+    /**
+     * AuditLog has no factory and sets $timestamps = false, so created_at has
+     * to be written explicitly — a null one renders as '—' rather than a date.
+     */
+    private function logAudit(array $attributes = []): AuditLog
+    {
+        return AuditLog::create(array_merge([
+            'action'     => 'test.event',
+            'module'     => 'test',
+            'created_at' => now(),
+        ], $attributes));
+    }
+
+    /**
+     * Admin/Audit/Index.vue reads a whitelisted `logs` paginator, the echoed
+     * `filters` (so the search box + date inputs follow the URL) and `action`,
+     * the URL the filter form submits back to.
+     */
+    public function test_admin_audit_logs_index_renders_the_filterable_list(): void
+    {
+        $actor = User::factory()->create(['name' => 'Rumana Support']);
+        $this->logAudit([
+            'user_id'        => $actor->id,
+            'action'         => 'listing.approved',
+            'module'         => 'listings',
+            'auditable_type' => Asset::class,
+            'auditable_id'   => 4242,
+            'ip_address'     => '203.0.113.9',
+            'created_at'     => Carbon::parse('2026-03-04 09:30:00'),
+        ]);
+        // An unattributed row: the actor collapses to 'System'.
+        $this->logAudit([
+            'action'     => 'order.auto_completed',
+            'created_at' => Carbon::parse('2026-03-03 08:00:00'),
+        ]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/audit-logs?q=listing&from=2026-03-01&to=2026-03-31')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Audit/Index')
+                ->has('logs.data', 1)
+                ->where('logs.data.0.actor', 'Rumana Support')
+                ->where('logs.data.0.action', 'listing.approved')
+                ->where('logs.data.0.entity', 'Asset')
+                ->where('logs.data.0.entity_id', 4242)
+                ->where('logs.data.0.ip', '203.0.113.9')
+                ->where('logs.data.0.date', '04 Mar 2026, 09:30')
+                ->where('logs.data.0.short_date', '04 Mar, 09:30')
+                ->where('filters.q', 'listing')
+                ->where('filters.from', '2026-03-01')
+                ->where('filters.to', '2026-03-31')
+                ->where('action', route('admin.audit'))
+            );
+    }
+
+    /**
+     * The controller had no authorization at all — the `admin` middleware only
+     * requires *some* admin role, so support and finance staff could read the
+     * whole trail while both sidebars gate the nav item on `audit.view`.
+     */
+    public function test_admin_audit_logs_requires_the_audit_view_permission(): void
+    {
+        // makeAdmin()'s role carries no permissions: it passes the middleware.
+        $this->actingAs($this->makeAdmin())->get('/admin/audit-logs')->assertForbidden();
+        $this->actingAs($this->makeSuperAdmin())->get('/admin/audit-logs')->assertOk();
+    }
+
+    /**
+     * The box has always been labelled "Search action or user…" but only
+     * `action` was matched, so searching a staff name or email found nothing.
+     */
+    public function test_admin_audit_logs_search_matches_the_action_or_the_actor(): void
+    {
+        $ada = User::factory()->create(['name' => 'Ada Lovelace', 'email' => 'ada.audit@example.test']);
+        $bob = User::factory()->create(['name' => 'Bob Karim', 'email' => 'bob.audit@example.test']);
+
+        $this->logAudit(['user_id' => $ada->id, 'action' => 'withdrawal.approved']);
+        $this->logAudit(['user_id' => $bob->id, 'action' => 'user.suspended']);
+
+        $admin = $this->makeSuperAdmin();
+
+        // By action.
+        $this->actingAs($admin)->get('/admin/audit-logs?q=withdrawal')->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->has('logs.data', 1)
+                ->where('logs.data.0.action', 'withdrawal.approved'));
+
+        // By actor name.
+        $this->actingAs($admin)->get('/admin/audit-logs?q=Karim')->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->has('logs.data', 1)
+                ->where('logs.data.0.actor', 'Bob Karim'));
+
+        // By actor email.
+        $this->actingAs($admin)->get('/admin/audit-logs?q=ada.audit@example.test')->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->has('logs.data', 1)
+                ->where('logs.data.0.actor', 'Ada Lovelace'));
+    }
+
+    public function test_admin_audit_logs_filter_by_date_range(): void
+    {
+        $this->logAudit(['action' => 'old.event', 'created_at' => Carbon::parse('2026-01-05 10:00:00')]);
+        $this->logAudit(['action' => 'inrange.event', 'created_at' => Carbon::parse('2026-02-10 10:00:00')]);
+        $this->logAudit(['action' => 'new.event', 'created_at' => Carbon::parse('2026-03-20 10:00:00')]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/audit-logs?from=2026-02-01&to=2026-02-28')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->has('logs.data', 1)
+                ->where('logs.data.0.action', 'inrange.event'));
+    }
+
+    /**
+     * The filters were never validated: a reversed range returned a silent
+     * empty page, and an unbounded `q` went straight into a LIKE.
+     */
+    public function test_admin_audit_logs_validate_the_filters(): void
+    {
+        $admin = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->from('/admin/audit-logs')
+            ->get('/admin/audit-logs?from=2026-03-31&to=2026-03-01')
+            ->assertRedirect('/admin/audit-logs')
+            ->assertSessionHasErrors('to');
+
+        $this->actingAs($admin)
+            ->from('/admin/audit-logs')
+            ->get('/admin/audit-logs?from=garbage')
+            ->assertRedirect('/admin/audit-logs')
+            ->assertSessionHasErrors('from');
+
+        $this->actingAs($admin)
+            ->from('/admin/audit-logs')
+            ->get('/admin/audit-logs?q='.str_repeat('a', 101))
+            ->assertRedirect('/admin/audit-logs')
+            ->assertSessionHasErrors('q');
+    }
+
+    /**
+     * paginate(30) + withQueryString(): page 2 keeps the active filter, and so
+     * do the paginator links Pagination.vue renders.
+     */
+    public function test_admin_audit_logs_paginate_and_keep_the_active_filter(): void
+    {
+        for ($i = 0; $i < 31; $i++) {
+            $this->logAudit([
+                'action'     => 'user.login',
+                'created_at' => Carbon::parse('2026-03-01 00:00:00')->addMinutes($i),
+            ]);
+        }
+        // Noise the filter must exclude.
+        $this->logAudit(['action' => 'user.suspended', 'created_at' => Carbon::parse('2026-03-02 00:00:00')]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/audit-logs?q=user.login&page=2')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('logs.total', 31)
+                ->where('logs.current_page', 2)
+                ->where('logs.last_page', 2)
+                ->has('logs.data', 1)
+                ->where('logs.links.1.url', route('admin.audit', ['q' => 'user.login', 'page' => 1]))
+            );
+    }
+
+    /**
+     * /admin/activity-logs is a second route onto the same controller, so the
+     * filter form submits to `action` (the current URL) rather than a hardcoded
+     * admin.audit that would bounce the user off the alias.
+     */
+    public function test_admin_activity_logs_alias_filters_against_itself(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/activity-logs?q=login')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Audit/Index')
+                ->where('action', route('admin.activity'))
+                ->where('filters.q', 'login'));
     }
 
     public function test_contact_renders_the_inertia_page(): void
