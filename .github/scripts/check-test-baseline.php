@@ -60,6 +60,68 @@ function bullets(array $lines): string
         : '- `' . implode("`\n- `", $lines) . "`\n";
 }
 
+/**
+ * The human half of a JUnit <failure>: PHPUnit writes the test identifier, then the
+ * assertion message, then a stack trace, all into one text node. Keep the middle — a
+ * red build is only actionable if the reason travels with the test name, and on a
+ * public repository the raw log needs an authenticated token to read.
+ */
+function reason(SimpleXMLElement $case): string
+{
+    foreach (['failure', 'error'] as $tag) {
+        foreach ($case->$tag as $node) {
+            $message = [];
+
+            foreach (preg_split('/\R/', trim((string) $node)) ?: [] as $i => $line) {
+                $line = trim($line);
+
+                // Line 0 repeats the test name; the first trace line ends the message.
+                if ($i === 0 || $line === '') {
+                    continue;
+                }
+
+                if (preg_match('#^([A-Za-z]:\\\\|/).*\.php:\d+$#', $line)) {
+                    break;
+                }
+
+                $message[] = $line;
+
+                if (count($message) >= 4) {
+                    break;
+                }
+            }
+
+            $type = (string) $node['type'];
+            $text = implode(' ', $message);
+
+            // PHPUnit often repeats the exception class inside the body; don't say it twice.
+            return trim($type !== '' && ! str_starts_with($text, $type) ? $type . ': ' . $text : $text);
+        }
+    }
+
+    return '(no failure detail in the report)';
+}
+
+/**
+ * 72 tests failing for one reason is one problem, not 72. Grouping by message turns an
+ * unreadable wall of test names into the handful of distinct causes behind them.
+ *
+ * @return array<string, list<string>>
+ */
+function groupByReason(array $ids, array $reasons): array
+{
+    $groups = [];
+
+    foreach ($ids as $id) {
+        $groups[$reasons[$id] ?? '(unknown)'][] = $id;
+    }
+
+    // Biggest cause first — that is usually the one worth reading.
+    uasort($groups, static fn (array $a, array $b): int => count($b) <=> count($a));
+
+    return $groups;
+}
+
 [$script, $junitPath, $baselinePath] = array_pad(array_slice($argv, 0, 3), 3, null);
 
 if ($junitPath === null || $baselinePath === null) {
@@ -85,10 +147,13 @@ if ($xml === false) {
 /** Every testcase, and the subset carrying a <failure> or <error> child. */
 $all = $xml->xpath('//testcase') ?: [];
 $failed = [];
+$reasons = [];
 
 foreach ($xml->xpath('//testcase[failure or error]') ?: [] as $case) {
     // `class` is the FQCN; `name` includes the data-set label for provider cases.
-    $failed[] = ((string) $case['class']) . '::' . ((string) $case['name']);
+    $id = ((string) $case['class']) . '::' . ((string) $case['name']);
+    $failed[] = $id;
+    $reasons[$id] = reason($case);
 }
 
 sort($failed);
@@ -108,6 +173,7 @@ $stale = array_values(array_diff($baseline, $failed));
 printf("Ran %d tests: %d failed, %d expected to fail.\n", $total, count($failed), count($baseline));
 
 $problems = [];
+$groups = groupByReason($regressions, $reasons);
 
 if ($total < MINIMUM_TESTS) {
     $problems[] = sprintf(
@@ -118,10 +184,21 @@ if ($total < MINIMUM_TESTS) {
 }
 
 if ($regressions !== []) {
+    $detail = [];
+
+    foreach ($groups as $why => $ids) {
+        $detail[] = sprintf(
+            "%d test(s) — %s\n      e.g. %s",
+            count($ids),
+            $why,
+            implode("\n           ", array_slice($ids, 0, 3))
+        );
+    }
+
     $problems[] = sprintf(
-        "%d test(s) failed that are not in the baseline — this is a regression:\n  - %s",
+        "%d test(s) failed that are not in the baseline — this is a regression. By cause:\n  - %s",
         count($regressions),
-        implode("\n  - ", $regressions)
+        implode("\n  - ", $detail)
     );
 }
 
@@ -137,17 +214,36 @@ if ($stale !== []) {
 if ($problems !== []) {
     fwrite(STDERR, "\n" . implode("\n\n", $problems) . "\n");
 
-    foreach ($problems as $problem) {
-        annotate('error', $problem);
+    // One annotation per distinct cause, not one per problem: GitHub truncates a long
+    // message, and the first cause is worth more than 70 truncated test names.
+    foreach ($groups as $why => $ids) {
+        annotate('error', sprintf("%d unlisted failure(s) — %s\n  e.g. %s", count($ids), $why, $ids[0]));
     }
 
-    summarize(
-        "## Test baseline mismatch\n\n"
+    if ($total < MINIMUM_TESTS) {
+        annotate('error', $problems[0]);
+    }
+
+    if ($stale !== []) {
+        annotate('error', end($problems));
+    }
+
+    $summary = "## Test baseline mismatch\n\n"
         . sprintf("Ran **%d** tests: **%d** failed, **%d** expected to fail.\n\n", $total, count($failed), count($baseline))
-        . "### Regressions — failing but not in the baseline\n\n" . bullets($regressions) . "\n"
-        . "### Stale — in the baseline but now passing\n\n" . bullets($stale) . "\n"
-        . sprintf("Baseline: `%s`\n", $baselinePath)
-    );
+        . "### Regressions — failing but not in the baseline\n\n";
+
+    if ($groups === []) {
+        $summary .= "_none_\n";
+    }
+
+    foreach ($groups as $why => $ids) {
+        $summary .= sprintf("**%d test(s)** — %s\n\n", count($ids), $why) . bullets($ids) . "\n";
+    }
+
+    $summary .= "### Stale — in the baseline but now passing\n\n" . bullets($stale) . "\n"
+        . sprintf("Baseline: `%s`\n", $baselinePath);
+
+    summarize($summary);
 
     exit(1);
 }
