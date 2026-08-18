@@ -32,9 +32,19 @@ class SettingsService
     {
         Setting::updateOrCreate(
             ['key' => $key],
-            ['value' => is_array($value) ? json_encode($value) : (string) $value, 'type' => $type, 'group' => $group]
+            ['value' => $this->encode($value), 'type' => $type, 'group' => $group]
         );
         Cache::forget(self::CACHE_KEY);
+    }
+
+    /** Booleans are stored as '1'/'0' — a raw (string) false would persist ''. */
+    private function encode(mixed $value): string
+    {
+        return match (true) {
+            is_array($value) => (string) json_encode($value),
+            is_bool($value)  => $value ? '1' : '0',
+            default          => (string) $value,
+        };
     }
 
     public function sellerFeeBp(): int

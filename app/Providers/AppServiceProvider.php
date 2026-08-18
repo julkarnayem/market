@@ -118,6 +118,12 @@ class AppServiceProvider extends ServiceProvider
             'orders.manage','payments.view',
             'staff.view','staff.manage','roles.view','roles.manage',
             'audit.view','reports.export','tickets.view','tickets.assign',
+            // settings.view was missing from this list, so the read side of the
+            // settings screen only resolved through AuthServiceProvider's
+            // DB-driven registration — which silently registers nothing when the
+            // permissions table is unreadable at boot (a fresh install, or a test
+            // that seeds after the container is built).
+            'settings.view',
         ];
 
         foreach ($permissions as $perm) {

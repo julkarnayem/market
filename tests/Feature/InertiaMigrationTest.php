@@ -24,6 +24,7 @@ use App\Models\SupportResponseTemplate;
 use App\Models\SupportTicket;
 use App\Models\User;
 use App\Models\Wallet;
+use App\Services\SettingsService;
 use Carbon\Carbon;
 use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
 use Illuminate\Support\Facades\DB;
@@ -2668,6 +2669,229 @@ class InertiaMigrationTest extends TestCase
         $this->assertStringContainsString('"Order Volume","৳2,550.00"', $csv);
         $this->assertStringContainsString('"Withdrawal Payouts","৳0.00"', $csv);
         $this->assertStringContainsString('"New Users","3"', $csv);
+    }
+
+    // ── Admin settings (checkpoint 43) ───────────────────────────────────
+
+    /** A complete, valid settings payload; override one key per validation test. */
+    private function settingsPayload(array $overrides = []): array
+    {
+        return array_merge([
+            'seller_fee_bp'          => 1500,
+            'buyer_fee_enabled'      => true,
+            'minimum_withdrawal'     => 10000,
+            'withdrawal_fee'         => 700,
+            'offer_validity_hours'   => 12,
+            'earning_lock_hours'     => 24,
+            'buyer_protection_hours' => 96,
+            'promotion_price_1'      => 60,
+            'promotion_price_2'      => 120,
+            'promotion_price_3'      => 180,
+            'promotion_price_4'      => 240,
+            'promotion_price_5'      => 300,
+        ], $overrides);
+    }
+
+    /** An admin who may read the settings screen but not save it. */
+    private function makeSettingsViewer(): User
+    {
+        $user = User::factory()->create();
+        $role = Role::create([
+            'name'          => 'ckpt-settings-viewer-'.$user->id,
+            'display_name'  => 'Settings Viewer',
+            'is_admin_role' => true,
+        ]);
+        $role->permissions()->attach(Permission::where('name', 'settings.view')->value('id'));
+        $user->roles()->attach($role->id);
+
+        return $user;
+    }
+
+    /**
+     * Admin/Settings/Index.vue reads a whitelisted `settings` object plus a
+     * `promotion_prices` list in BDT.
+     *
+     * The settings table is empty here (only PermissionRoleSeeder runs), which
+     * is exactly the state the Blade could not survive: it indexed
+     * SettingsService::all() raw, so `$settings['seller_fee_bp']` threw on a
+     * missing key. The typed accessors fall back to config/marketplace.php.
+     */
+    public function test_admin_settings_renders_the_inertia_page_with_config_fallbacks(): void
+    {
+        $this->assertDatabaseCount('settings', 0);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/settings')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Settings/Index')
+                ->where('can_manage', true)
+                ->where('settings.seller_fee_bp', 1000)
+                ->where('settings.buyer_fee_enabled', false)
+                ->where('settings.minimum_withdrawal', 5000)
+                ->where('settings.withdrawal_fee', 500)
+                ->where('settings.offer_validity_hours', 8)
+                ->where('settings.earning_lock_hours', 8)
+                ->where('settings.buyer_protection_hours', 72)
+                ->has('promotion_prices', 5)
+                ->has('promotion_prices.0', fn (Assert $p) => $p
+                    ->where('days', 1)
+                    ->where('label', '1 day')
+                    ->where('field', 'promotion_price_1')
+                    // ৳50.00 as BDT; json_encode drops the zero fraction, so the
+                    // wire value is 50, not 50.0.
+                    ->where('bdt', 50)
+                )
+                ->where('promotion_prices.4.label', '5 days')
+                ->where('promotion_prices.4.bdt', 250)
+            );
+    }
+
+    public function test_admin_settings_requires_the_view_permission(): void
+    {
+        $admin = $this->makeAdmin();
+
+        $this->actingAs($admin)->get('/admin/settings')->assertForbidden();
+        $this->actingAs($admin)
+            ->patch('/admin/settings', $this->settingsPayload())
+            ->assertForbidden();
+    }
+
+    /**
+     * settings.view alone renders the page read-only. The Blade wrapped its form
+     * in @can('settings.manage') with an @else warning, but index() authorized
+     * settings.manage too — so that branch could never render while both
+     * sidebars pointed the nav item at settings.view.
+     */
+    public function test_admin_settings_is_read_only_without_the_manage_permission(): void
+    {
+        $viewer = $this->makeSettingsViewer();
+
+        $this->actingAs($viewer)
+            ->get('/admin/settings')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Settings/Index')
+                ->where('can_manage', false)
+                ->where('settings.seller_fee_bp', 1000)
+                ->etc()
+            );
+
+        $this->actingAs($viewer)
+            ->patch('/admin/settings', $this->settingsPayload())
+            ->assertForbidden();
+
+        $this->assertDatabaseCount('settings', 0);
+    }
+
+    /**
+     * Every key lands with its own cast type and group. update() used to infer
+     * the type from PHP (`is_bool($value) ? 'bool' : 'int'`, never true for form
+     * input) and hardcoded group 'fees' for all seven keys, so one save dragged
+     * the withdrawal, offer and order settings into the fees group.
+     */
+    public function test_admin_settings_save_persists_each_value_with_its_type_and_group(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/settings')
+            ->patch('/admin/settings', $this->settingsPayload())
+            ->assertRedirect('/admin/settings')
+            ->assertSessionHas('success', 'Settings saved.');
+
+        $this->assertDatabaseHas('settings', ['key' => 'seller_fee_bp', 'value' => '1500', 'type' => 'int', 'group' => 'fees']);
+        $this->assertDatabaseHas('settings', ['key' => 'buyer_fee_enabled', 'value' => '1', 'type' => 'bool', 'group' => 'fees']);
+        $this->assertDatabaseHas('settings', ['key' => 'minimum_withdrawal', 'value' => '10000', 'type' => 'int', 'group' => 'withdrawal']);
+        $this->assertDatabaseHas('settings', ['key' => 'withdrawal_fee', 'value' => '700', 'type' => 'int', 'group' => 'withdrawal']);
+        $this->assertDatabaseHas('settings', ['key' => 'offer_validity_hours', 'value' => '12', 'type' => 'int', 'group' => 'offers']);
+        $this->assertDatabaseHas('settings', ['key' => 'earning_lock_hours', 'value' => '24', 'type' => 'int', 'group' => 'orders']);
+        $this->assertDatabaseHas('settings', ['key' => 'buyer_protection_hours', 'value' => '96', 'type' => 'int', 'group' => 'orders']);
+
+        // BDT in, poisha out.
+        $this->assertDatabaseHas('settings', [
+            'key'   => 'promotion_prices',
+            'value' => json_encode([1 => 6000, 2 => 12000, 3 => 18000, 4 => 24000, 5 => 30000]),
+            'type'  => 'json',
+            'group' => 'promotion',
+        ]);
+
+        $settings = app(SettingsService::class);
+        $this->assertSame(1500, $settings->sellerFeeBp());
+        $this->assertTrue($settings->buyerFeeEnabled());
+        $this->assertSame(10000, $settings->minWithdrawal());
+        $this->assertSame(700, $settings->withdrawalFee());
+        $this->assertSame(12, $settings->offerValidityHours());
+        $this->assertSame(24, $settings->earningLockHours());
+        $this->assertSame(96, $settings->buyerProtectionHours());
+        $this->assertSame([1 => 6000, 2 => 12000, 3 => 18000, 4 => 24000, 5 => 30000], $settings->promotionPrices());
+    }
+
+    /**
+     * The buyer fee has to be switchable off. The Blade's checkbox omitted its
+     * key when unchecked and the rule was a bare `boolean`, so validate() simply
+     * dropped it — the same silent-discard class as the Categories and support
+     * template toggles. Vue posts a real JSON boolean and the rule is required.
+     */
+    public function test_admin_settings_can_disable_the_buyer_fee(): void
+    {
+        $admin = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->patch('/admin/settings', $this->settingsPayload(['buyer_fee_enabled' => true]))
+            ->assertRedirect();
+        $this->assertTrue(app(SettingsService::class)->buyerFeeEnabled());
+
+        $this->actingAs($admin)
+            ->patch('/admin/settings', $this->settingsPayload(['buyer_fee_enabled' => false]))
+            ->assertRedirect();
+
+        $this->assertDatabaseHas('settings', ['key' => 'buyer_fee_enabled', 'value' => '0', 'type' => 'bool']);
+        $this->assertFalse(app(SettingsService::class)->buyerFeeEnabled());
+    }
+
+    public function test_admin_settings_save_rejects_out_of_range_values(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/settings')
+            ->patch('/admin/settings', $this->settingsPayload([
+                'seller_fee_bp'        => 10001,   // > 100%
+                'minimum_withdrawal'   => 50,      // below ৳1
+                'offer_validity_hours' => 200,     // > 7 days
+                'earning_lock_hours'   => 0,
+            ]))
+            ->assertRedirect('/admin/settings')
+            ->assertSessionHasErrors(['seller_fee_bp', 'minimum_withdrawal', 'offer_validity_hours', 'earning_lock_hours']);
+
+        $this->assertDatabaseCount('settings', 0);
+    }
+
+    /**
+     * The promotion prices had no rules at all: they went straight into
+     * Money::toPoisha(), so "abc" silently became ৳0 and a negative price was
+     * accepted. A missing one is now an error rather than a skipped write.
+     */
+    public function test_admin_settings_save_validates_the_promotion_prices(): void
+    {
+        $admin = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->from('/admin/settings')
+            ->patch('/admin/settings', $this->settingsPayload([
+                'promotion_price_1' => 'abc',
+                'promotion_price_2' => -50,
+            ]))
+            ->assertRedirect('/admin/settings')
+            ->assertSessionHasErrors(['promotion_price_1', 'promotion_price_2']);
+
+        $payload = $this->settingsPayload();
+        unset($payload['promotion_price_5']);
+
+        $this->actingAs($admin)
+            ->from('/admin/settings')
+            ->patch('/admin/settings', $payload)
+            ->assertRedirect('/admin/settings')
+            ->assertSessionHasErrors('promotion_price_5');
+
+        $this->assertDatabaseCount('settings', 0);
     }
 
     public function test_contact_renders_the_inertia_page(): void
