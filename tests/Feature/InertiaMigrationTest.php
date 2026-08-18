@@ -28,6 +28,7 @@ use App\Services\SettingsService;
 use Carbon\Carbon;
 use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -88,20 +89,78 @@ class InertiaMigrationTest extends TestCase
     }
 
     /**
-     * Coexistence guard: Blade and Inertia must keep working side by side.
-     * Every routed page is Inertia now, so this points at the error views —
-     * `resources/views/errors/*.blade.php`, rendered by the exception handler
-     * and standalone Blade by design (an Inertia page cannot render when the
-     * failure is the request itself). /marketplace, /dashboard and its
-     * sub-pages, /admin/audit-logs and /checkout/{slug} have all passed
-     * through here.
+     * The migration is complete: `app.blade.php` (the Inertia root) and
+     * `errors/*.blade.php` are the only Blade left, and both are deliberate.
+     * The error views are standalone `<html>` documents because an Inertia page
+     * cannot render when the failure is the request itself.
+     *
+     * This replaces the old coexistence guard — /marketplace, /dashboard and its
+     * sub-pages, /admin/audit-logs and /checkout/{slug} all took their turn as
+     * its target while they were still Blade. Nothing is left to point it at,
+     * so it now guards the end state instead: the error views must keep
+     * rendering on their own, and Blade must not creep back in.
      */
-    public function test_unmigrated_blade_pages_still_render(): void
+    public function test_error_pages_render_as_standalone_blade(): void
     {
         $this->get('/definitely-not-a-real-route')
             ->assertNotFound()
             ->assertSee('404', false)
             ->assertDontSee('data-page', false);
+    }
+
+    /**
+     * Every error view renders on its own. They take no variables and reference
+     * no Blade components — which is what let checkpoint 46 delete the whole
+     * `components/` + `partials/` tree — so a stray `<x-…>` added later would
+     * fatal a page that only ever renders when something is already wrong.
+     */
+    #[DataProvider('errorViewProvider')]
+    public function test_each_error_view_renders_without_components(string $view): void
+    {
+        $html = view("errors.{$view}")->render();
+
+        $this->assertStringContainsString('<html', $html);
+        $this->assertStringNotContainsString('data-page', $html);
+        // An unresolved component tag survives compilation as literal markup.
+        $this->assertStringNotContainsString('<x-', $html);
+    }
+
+    public static function errorViewProvider(): array
+    {
+        return [
+            // Keys are prefixed because a bare numeric string key becomes an
+            // int, and PHPUnit then labels the case "#0" instead of the code.
+            'errors.403' => ['403'],
+            'errors.404' => ['404'],
+            'errors.419' => ['419'],
+            'errors.429' => ['429'],
+            'errors.500' => ['500'],
+            'errors.503' => ['503'],
+        ];
+    }
+
+    /**
+     * The Blade surface is closed. `app.blade.php` + the six error views are the
+     * whole of `resources/views/` — no layouts, no partials, no components. This
+     * fails loudly if a new Blade view (or a resurrected old one) appears.
+     */
+    public function test_no_blade_views_remain_beyond_the_inertia_root_and_error_pages(): void
+    {
+        $views = collect(File::allFiles(resource_path('views')))
+            ->map(fn ($file) => str_replace('\\', '/', $file->getRelativePathname()))
+            ->sort()
+            ->values()
+            ->all();
+
+        $this->assertSame([
+            'app.blade.php',
+            'errors/403.blade.php',
+            'errors/404.blade.php',
+            'errors/419.blade.php',
+            'errors/429.blade.php',
+            'errors/500.blade.php',
+            'errors/503.blade.php',
+        ], $views);
     }
 
     /**

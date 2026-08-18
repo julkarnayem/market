@@ -85,9 +85,4 @@ class DashboardController extends Controller
             ])->values(),
         ]);
     }
-
-    public function section(string $title, string $part = 'the next release')
-    {
-        return view('admin.section', compact('title','part'));
-    }
 }
