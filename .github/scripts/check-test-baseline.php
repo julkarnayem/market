@@ -26,6 +26,40 @@ declare(strict_types=1);
  */
 const MINIMUM_TESTS = 200;
 
+/**
+ * GitHub renders `::error::` workflow commands as annotations on the run page. That is the
+ * only place the reason for a red build is visible without opening the raw log — which
+ * needs an authenticated token even on a public repository. Newlines must be encoded or
+ * only the first line of a multi-line message survives.
+ */
+function annotate(string $level, string $message): void
+{
+    if (getenv('GITHUB_ACTIONS') !== 'true') {
+        return;
+    }
+
+    // Escape `%` first, so the %0A/%0D introduced below are not double-escaped.
+    echo "::{$level}::" . str_replace(['%', "\r", "\n"], ['%25', '%0D', '%0A'], $message) . "\n";
+}
+
+/** The job summary panel: markdown, and the friendliest place to read a set difference. */
+function summarize(string $markdown): void
+{
+    $path = (string) getenv('GITHUB_STEP_SUMMARY');
+
+    if ($path !== '') {
+        file_put_contents($path, $markdown, FILE_APPEND);
+    }
+}
+
+/** `- ` list, or an explicit "none" so an empty section is not mistaken for missing data. */
+function bullets(array $lines): string
+{
+    return $lines === []
+        ? "_none_\n"
+        : '- `' . implode("`\n- `", $lines) . "`\n";
+}
+
 [$script, $junitPath, $baselinePath] = array_pad(array_slice($argv, 0, 3), 3, null);
 
 if ($junitPath === null || $baselinePath === null) {
@@ -102,8 +136,29 @@ if ($stale !== []) {
 
 if ($problems !== []) {
     fwrite(STDERR, "\n" . implode("\n\n", $problems) . "\n");
+
+    foreach ($problems as $problem) {
+        annotate('error', $problem);
+    }
+
+    summarize(
+        "## Test baseline mismatch\n\n"
+        . sprintf("Ran **%d** tests: **%d** failed, **%d** expected to fail.\n\n", $total, count($failed), count($baseline))
+        . "### Regressions — failing but not in the baseline\n\n" . bullets($regressions) . "\n"
+        . "### Stale — in the baseline but now passing\n\n" . bullets($stale) . "\n"
+        . sprintf("Baseline: `%s`\n", $baselinePath)
+    );
+
     exit(1);
 }
 
 echo "Failures match the baseline exactly.\n";
+
+summarize(sprintf(
+    "## Test baseline\n\nRan **%d** tests. All **%d** failures match `%s` exactly.\n",
+    $total,
+    count($failed),
+    $baselinePath
+));
+
 exit(0);

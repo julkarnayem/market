@@ -19,9 +19,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # The minimum in DEPLOYMENT.md — CI should test the floor, not the
           # newest runtime that happens to be installed locally.
@@ -50,7 +50,7 @@ jobs:
         php: ['8.2']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # .env carries live BulkSMSBD and UddoktaPay credentials. It is covered by
       # .gitignore; this fails the build loudly if that ever stops being true.
@@ -76,7 +76,7 @@ jobs:
         run: cp .env.example .env
 
       - name: Cache Composer downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/composer/files
           key: composer-php${{ matrix.php }}-${{ hashFiles('composer.lock') }}

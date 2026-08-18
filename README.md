@@ -175,7 +175,10 @@ php artisan test tests/Feature/InertiaMigrationTest.php
 ```
 
 Tests run against SQLite `:memory:` (pinned in `phpunit.xml`), so no database service is
-needed and no test can reach the live SMS or payment gateways.
+needed and no test can reach the live SMS or payment gateways. `tests/TestCase.php` also
+stubs Vite via `withoutVite()`, so a fresh clone can run the suite before ever running
+`npm run build` — `public/build/` is gitignored, and without the stub every test that
+renders the Inertia root fails on the missing manifest.
 
 **239 tests.** `InertiaMigrationTest` alone carries 195 of them — one or more per migrated
 page, asserting the component name and the exact prop shape.
