@@ -123,9 +123,14 @@ export type PageProps<T extends Record<string, unknown> = Record<string, unknown
     T & SharedProps;
 
 declare global {
-    // Ziggy's route() helper, available globally after ZiggyVue is installed.
+    // Ziggy's route() helper. The @routes directive used to define this by
+    // inlining route.umd.js; app.ts (and ssr.ts) now assign it from the bundle.
     // eslint-disable-next-line no-var
     var route: typeof ziggyRoute;
+    // The route table a bare route() call reads when given no explicit config.
+    // Sourced from the shared `ziggy` prop, minus `location` in the browser.
+    // eslint-disable-next-line no-var
+    var Ziggy: ZiggyConfig;
 }
 
 declare module 'vue' {

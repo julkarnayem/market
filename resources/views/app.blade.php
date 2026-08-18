@@ -10,8 +10,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 
-    {{-- Ziggy named routes, available to Vue via route() --}}
-    @routes
+    {{-- No @routes here: it inlined the 18 KB route table *and* a 21 KB copy of
+         Ziggy's route.umd.js into every full page load, while HandleInertiaRequests
+         already shares the same table as the `ziggy` prop. app.ts installs the
+         route() global from the bundle instead. --}}
 
     {{-- Vite: Vue 3 + Inertia client entry (imports resources/css/app.css) --}}
     @vite(['resources/js/app.ts'])

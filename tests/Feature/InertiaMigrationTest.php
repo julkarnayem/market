@@ -164,6 +164,40 @@ class InertiaMigrationTest extends TestCase
     }
 
     /**
+     * Ziggy's route table ships exactly once, in the shared `ziggy` prop.
+     *
+     * `@routes` used to inline it into <head> as well — 18 KB of route table
+     * plus a 21 KB copy of route.umd.js — on top of the copy the prop already
+     * carried. app.ts now installs the route() global from the app bundle, so
+     * nothing Ziggy-shaped belongs in the HTML any more.
+     *
+     * This can only prove the payload is gone, not that route() still resolves:
+     * the global is assigned in JS, so a break there is invisible to PHPUnit and
+     * to vue-tsc alike (index.d.ts declares `var route`, so it type-checks
+     * either way). That side is verified in a browser.
+     */
+    public function test_ziggy_is_sent_once_and_not_inlined_in_the_root_view(): void
+    {
+        $html = $this->get('/')->assertOk()->getContent();
+
+        // The two things @routes emitted: `const Ziggy = {...}` and the UMD
+        // bundle, whose error strings are its most stable fingerprint.
+        $this->assertStringNotContainsString('const Ziggy=', $html);
+        $this->assertStringNotContainsString('Ziggy error:', $html);
+        // Ziggy v2's other inline transport, in case someone reaches for it.
+        $this->assertStringNotContainsString('ziggy-routes-json', $html);
+
+        // One occurrence = the prop. Two = the double-send is back.
+        $this->assertSame(
+            1,
+            substr_count($html, '"marketplace.index"'),
+            'The Ziggy route table should appear exactly once, in the shared prop.',
+        );
+
+        $this->get('/')->assertInertia(fn (Assert $page) => $page->has('ziggy.routes'));
+    }
+
+    /**
      * Admin/Index.vue reads a whitelisted `stats` object plus recentOrders /
      * recentTickets. Requires an admin user (a Role with is_admin_role passes
      * the `admin` middleware); the seeded 'admin' role name is taken, so use a
