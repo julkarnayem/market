@@ -197,6 +197,34 @@ class InertiaMigrationTest extends TestCase
         $this->get('/')->assertInertia(fn (Assert $page) => $page->has('ziggy.routes'));
     }
 
+    public function test_inertia_page_paths_match_the_directory_case_on_disk(): void
+    {
+        // inertia-laravel defaults `pages.paths` to resource_path('js/pages'); this
+        // app keeps its pages in resources/js/Pages, which is what app.ts and ssr.ts
+        // glob for. A case-insensitive filesystem resolves either spelling, so the
+        // mismatch is invisible on Windows and macOS and then fails on Linux — as
+        // "Inertia page component file [X] does not exist" on all 72 tests below
+        // that assert a component. scandir() reports the real on-disk case, so this
+        // catches it everywhere rather than only on the CI runner.
+        $paths = config('inertia.pages.paths');
+
+        $this->assertNotEmpty($paths, 'inertia.pages.paths is empty: the view finder has nowhere to look.');
+
+        foreach ($paths as $path) {
+            $this->assertDirectoryExists($path);
+
+            $this->assertContains(
+                basename($path),
+                scandir(dirname($path)) ?: [],
+                sprintf('[%s] does not exist with that exact case in [%s].', basename($path), dirname($path)),
+            );
+        }
+
+        // The failure this protects against, exercised directly: resolve a page
+        // through the same finder that assertInertia()->component() uses.
+        $this->assertStringEndsWith('Home.vue', app('inertia.view-finder')->find('Home'));
+    }
+
     /**
      * Admin/Index.vue reads a whitelisted `stats` object plus recentOrders /
      * recentTickets. Requires an admin user (a Role with is_admin_role passes

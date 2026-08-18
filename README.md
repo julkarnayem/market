@@ -180,7 +180,7 @@ stubs Vite via `withoutVite()`, so a fresh clone can run the suite before ever r
 `npm run build` — `public/build/` is gitignored, and without the stub every test that
 renders the Inertia root fails on the missing manifest.
 
-**239 tests.** `InertiaMigrationTest` alone carries 195 of them — one or more per migrated
+**240 tests.** `InertiaMigrationTest` alone carries 196 of them — one or more per migrated
 page, asserting the component name and the exact prop shape.
 
 **13 failures are known and expected.** Twelve are `BadMethodCallException` from model
