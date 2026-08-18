@@ -89,23 +89,18 @@ class InertiaMigrationTest extends TestCase
 
     /**
      * Coexistence guard: Blade and Inertia must keep working side by side.
-     * The whole admin area is Inertia now, so this points at /checkout/{slug} —
-     * the only remaining live Blade route. Repoint it if that one migrates.
-     * /marketplace, /dashboard, /dashboard/favorites, /dashboard/wallet,
-     * /dashboard/promotions, /dashboard/notifications, /dashboard/tickets,
-     * /dashboard/messages and /admin/audit-logs have all passed through here.
+     * Every routed page is Inertia now, so this points at the error views —
+     * `resources/views/errors/*.blade.php`, rendered by the exception handler
+     * and standalone Blade by design (an Inertia page cannot render when the
+     * failure is the request itself). /marketplace, /dashboard and its
+     * sub-pages, /admin/audit-logs and /checkout/{slug} have all passed
+     * through here.
      */
     public function test_unmigrated_blade_pages_still_render(): void
     {
-        [, $asset] = $this->seedOneAsset();
-
-        // A plain buyer: canTransact() only needs an active status, and the
-        // seller comes from AssetFactory so buyer !== asset->user_id.
-        $buyer = User::factory()->create();
-
-        $this->actingAs($buyer)
-            ->get('/checkout/'.$asset->slug)
-            ->assertOk()
+        $this->get('/definitely-not-a-real-route')
+            ->assertNotFound()
+            ->assertSee('404', false)
             ->assertDontSee('data-page', false);
     }
 
@@ -3077,6 +3072,135 @@ class InertiaMigrationTest extends TestCase
                 ->component('Admin/Audit/Index')
                 ->where('action', route('admin.activity'))
                 ->where('filters.q', 'login'));
+    }
+
+    // ── Checkout (checkpoint 45) ─────────────────────────────────────────
+
+    /**
+     * Checkout/Show.vue reads a whitelisted `asset`, the fully server-calculated
+     * `fees` (already Money::format'ed), the `order` payload it posts back to
+     * initiate(), and `buyer_protection_hours`.
+     */
+    public function test_checkout_renders_the_inertia_page_with_server_calculated_fees(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+        $buyer = User::factory()->create();
+
+        $this->actingAs($buyer)
+            ->get('/checkout/'.$asset->slug)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Checkout/Show')
+                ->where('asset.title', 'Established Cooking Page')
+                ->where('asset.seller_name', $asset->seller->name)
+                ->where('asset.url', route('marketplace.show', $asset->slug))
+                // ৳2,500.00 × 1, seller fee 1000bp = 10%.
+                ->where('fees.unit_price', '৳2,500.00')
+                ->where('fees.quantity', 1)
+                ->where('fees.subtotal', '৳2,500.00')
+                ->where('fees.buyer_total', '৳2,500.00')
+                ->where('fees.seller_fee_percent', '10.00')
+                ->where('fees.seller_earning', '৳2,250.00')
+                // buyer_fee_enabled is false by default, so no fee row.
+                ->where('fees.has_buyer_fee', false)
+                ->where('fees.buyer_fee_percent', null)
+                ->where('has_offer', false)
+                ->where('order.asset_id', $asset->id)
+                ->where('order.quantity', 1)
+                ->where('order.offer_id', null)
+                // Whether UddoktaPay is configured depends on the environment.
+                ->has('gateway_configured')
+                ->where('buyer_protection_hours', 72)
+            );
+    }
+
+    public function test_checkout_requires_authentication(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+
+        $this->get('/checkout/'.$asset->slug)->assertRedirect('/login');
+    }
+
+    /**
+     * The Blade hard-coded "72-hour buyer protection" while the window is
+     * admin-configurable, so the promise drifted from the value orders get.
+     */
+    public function test_checkout_shows_the_configured_buyer_protection_window(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+        app(SettingsService::class)->set('buyer_protection_hours', 48, 'int', 'orders');
+
+        $this->actingAs(User::factory()->create())
+            ->get('/checkout/'.$asset->slug)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('buyer_protection_hours', 48));
+    }
+
+    public function test_checkout_prices_the_requested_quantity(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+        $asset->update(['quantity' => 3, 'available_quantity' => 3]);
+
+        $this->actingAs(User::factory()->create())
+            ->get('/checkout/'.$asset->slug.'?qty=2')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('fees.quantity', 2)
+                ->where('fees.subtotal', '৳5,000.00')
+                ->where('fees.buyer_total', '৳5,000.00')
+                ->where('order.quantity', 2)
+            );
+    }
+
+    /**
+     * validateAndCalculate() aborts and show() converts the HttpException into a
+     * flash error rather than a hard 403 page — SecurityTest asserts the 302.
+     */
+    public function test_checkout_blocks_a_self_purchase_with_a_flash_error(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+
+        $this->actingAs($asset->seller)
+            ->from('/marketplace')
+            ->get('/checkout/'.$asset->slug)
+            ->assertRedirect('/marketplace')
+            ->assertSessionHas('error', 'You cannot purchase your own listing.');
+    }
+
+    public function test_checkout_rejects_a_quantity_above_the_available_stock(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+
+        $this->actingAs(User::factory()->create())
+            ->from('/marketplace')
+            ->get('/checkout/'.$asset->slug.'?qty=5')
+            ->assertRedirect('/marketplace')
+            ->assertSessionHas('error', 'Only 1 unit(s) available.');
+    }
+
+    /** The offer must belong to this buyer, this asset, and be accepted. */
+    public function test_checkout_404s_for_an_offer_that_is_not_the_buyers(): void
+    {
+        [, $asset] = $this->seedOneAsset();
+
+        $this->actingAs(User::factory()->create())
+            ->get('/checkout/'.$asset->slug.'?offer=99999')
+            ->assertNotFound();
+    }
+
+    /**
+     * initiate() is unchanged apart from returning Inertia::location() instead
+     * of redirect()->away() — validation still fails before the gateway is ever
+     * contacted, which is the only part safe to exercise here (a success path
+     * would call the live UddoktaPay API).
+     */
+    public function test_checkout_initiate_validates_its_payload(): void
+    {
+        $this->actingAs(User::factory()->create())
+            ->from('/marketplace')
+            ->post('/checkout', [])
+            ->assertRedirect('/marketplace')
+            ->assertSessionHasErrors(['asset_id', 'quantity']);
     }
 
     public function test_contact_renders_the_inertia_page(): void

@@ -6,11 +6,13 @@ use App\Models\Offer;
 use App\Models\Order;
 use App\Services\FeeCalculator;
 use App\Services\OrderService;
+use App\Services\SettingsService;
 use App\Services\UddoktaPayService;
 use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use Inertia\Inertia;
 
 class CheckoutController extends Controller
 {
@@ -21,7 +23,7 @@ class CheckoutController extends Controller
     ) {}
 
     /** GET /checkout/{asset}?qty=1  or  /checkout/{asset}?offer={id} */
-    public function show(Request $request, string $slug)
+    public function show(Request $request, string $slug, SettingsService $settings)
     {
         $user  = Auth::user();
         $asset = Asset::where('slug', $slug)->with(['seller','category','coverImage'])->firstOrFail();
@@ -44,9 +46,46 @@ class CheckoutController extends Controller
             return back()->with('error', $e->getMessage());
         }
 
-        $gatewayConfigured = $this->gateway->isConfigured();
+        $unitPrice = $offer ? $offer->amount : $asset->price;
 
-        return view('checkout.show', compact('asset','offer','quantity','feeSnap','gatewayConfigured'));
+        return Inertia::render('Checkout/Show', [
+            'asset' => [
+                'title'       => $asset->title,
+                'url'         => route('marketplace.show', $asset->slug),
+                'cover'       => $asset->coverImage?->url(),
+                'icon'        => $asset->category->icon ?? '🧩',
+                // The seller was dereferenced unguarded; a listing whose owner
+                // has been removed 500'd the whole checkout.
+                'seller_name' => $asset->seller?->name ?? 'Unknown seller',
+            ],
+            'fees' => [
+                'unit_price'         => Money::format($unitPrice),
+                'quantity'           => $quantity,
+                'subtotal'           => Money::format($feeSnap['subtotal']),
+                // The Blade guarded on enabled && amount > 0; keep that so a
+                // 0-poisha buyer fee stays off the receipt.
+                'has_buyer_fee'      => $feeSnap['buyer_fee_enabled'] && $feeSnap['buyer_fee_amount'] > 0,
+                'buyer_fee_amount'   => Money::format($feeSnap['buyer_fee_amount']),
+                'buyer_fee_percent'  => $feeSnap['buyer_fee_type'] === 'percentage' && $feeSnap['buyer_fee_bp'] !== null
+                    ? number_format($feeSnap['buyer_fee_bp'] / 100, 2)
+                    : null,
+                'buyer_total'        => Money::format($feeSnap['buyer_total']),
+                'seller_fee_percent' => number_format($feeSnap['seller_fee_bp'] / 100, 2),
+                'seller_earning'     => Money::format($feeSnap['seller_earning']),
+            ],
+            'has_offer' => (bool) $offer,
+            // Posted straight back to initiate(), which re-validates all of it.
+            'order' => [
+                'asset_id' => $asset->id,
+                'quantity' => $quantity,
+                'offer_id' => $offer?->id,
+            ],
+            'gateway_configured' => $this->gateway->isConfigured(),
+            // The Blade hard-coded "72-hour buyer protection" while the window is
+            // admin-configurable (settings.buyer_protection_hours), so the promise
+            // silently drifted from the value the orders actually get.
+            'buyer_protection_hours' => $settings->buyerProtectionHours(),
+        ]);
     }
 
     /** POST /checkout — initiate payment */
@@ -76,7 +115,12 @@ class CheckoutController extends Controller
             // Store order reference in session for callback handling
             session(['pending_order_id' => $order->id]);
 
-            return redirect()->away($checkoutUrl);
+            // Inertia::location, not redirect()->away(): the pay button is an
+            // Inertia POST now, and its XHR cannot follow a 302 to the gateway's
+            // origin. This answers an Inertia request with 409 +
+            // X-Inertia-Location so the client does a real navigation, and falls
+            // back to exactly the same Redirect::away() for a plain form post.
+            return Inertia::location($checkoutUrl);
         } catch (\RuntimeException $e) {
             return back()->with('error', $e->getMessage());
         }
