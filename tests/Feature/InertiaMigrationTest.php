@@ -4,6 +4,7 @@ namespace Tests\Feature;
 use App\Enums\AssetStatus;
 use App\Enums\TicketStatus;
 use App\Models\Asset;
+use App\Models\AuditLog;
 use App\Models\Category;
 use App\Models\CategoryAttribute;
 use App\Models\Conversation;
@@ -23,6 +24,7 @@ use App\Models\SupportTicket;
 use App\Models\User;
 use App\Models\Wallet;
 use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -1979,6 +1981,335 @@ class InertiaMigrationTest extends TestCase
 
         $this->assertSame('Super Admin', $role->fresh()->display_name);
         $this->assertGreaterThan(0, $role->permissions()->count());
+    }
+
+    /**
+     * A staff account holding one of the seeded roles. `is_admin_role` is true
+     * for all five, so these users pass the `admin` middleware and show up in
+     * StaffController::index()'s whereHas('roles') roster.
+     */
+    private function seedStaff(string $roleName, array $overrides = []): User
+    {
+        $user = User::factory()->create(array_merge([
+            'email' => 'staff.'.$roleName.'@example.test',
+        ], $overrides));
+        $user->roles()->attach(Role::where('name', $roleName)->value('id'));
+
+        return $user;
+    }
+
+    /** Admin/Staff/Index.vue reads a whitelisted `staff` paginator. */
+    public function test_admin_staff_index_renders_the_roster(): void
+    {
+        $staff = $this->seedStaff('moderator', [
+            'name'       => 'Imran Moderator',
+            'email'      => 'imran.mod@example.test',
+            'created_at' => now()->subDays(3),
+        ]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/staff')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Staff/Index')
+                ->has('staff.data', 2)
+                // latest() first, and the acting admin was created just now.
+                ->where('staff.data.0.is_self', true)
+                ->where('staff.data.1.name', 'Imran Moderator')
+                ->where('staff.data.1.email', 'imran.mod@example.test')
+                ->where('staff.data.1.initial', 'I')
+                ->where('staff.data.1.status', 'active')
+                ->where('staff.data.1.roles', ['Moderator'])
+                ->where('staff.data.1.joined', now()->subDays(3)->format('d M Y'))
+                ->where('staff.data.1.is_self', false)
+                ->where('staff.data.1.url', route('admin.staff.show', $staff))
+            );
+    }
+
+    public function test_admin_staff_requires_the_staff_permissions(): void
+    {
+        // makeAdmin()'s role carries no permissions: the `admin` middleware lets
+        // the request through and every authorize() call fails.
+        $target = $this->seedStaff('support');
+
+        $this->actingAs($this->makeAdmin());
+        $this->get('/admin/staff')->assertForbidden();
+        $this->get('/admin/staff/create')->assertForbidden();
+        $this->get('/admin/staff/'.$target->id)->assertForbidden();
+        $this->post('/admin/staff', [
+            'name'                  => 'Sneaky Hire',
+            'email'                 => 'sneaky@example.test',
+            'password'              => 'long-enough-pass',
+            'password_confirmation' => 'long-enough-pass',
+            'role_id'               => Role::where('name', 'support')->value('id'),
+        ])->assertForbidden();
+        $this->post('/admin/staff/'.$target->id.'/suspend')->assertForbidden();
+
+        $this->assertNull(User::where('email', 'sneaky@example.test')->first());
+    }
+
+    /**
+     * Both sidebars gate the Staff nav item on `staff.view`, but every method
+     * authorized `staff.manage` — so the link 403'd for anyone holding view
+     * alone. Reads now take view; writes still take manage.
+     */
+    public function test_staff_view_permission_reads_but_cannot_manage(): void
+    {
+        $target = $this->seedStaff('support');
+
+        $viewerRole = Role::create([
+            'name'          => 'staff_auditor',
+            'display_name'  => 'Staff Auditor',
+            'is_admin_role' => true,
+        ]);
+        $viewerRole->permissions()->attach(Permission::where('name', 'staff.view')->value('id'));
+        $viewer = User::factory()->create(['email' => 'staff.viewer@example.test']);
+        $viewer->roles()->attach($viewerRole->id);
+        $this->assertTrue($viewer->hasPermission('staff.view'));
+        $this->assertFalse($viewer->hasPermission('staff.manage'));
+
+        $this->actingAs($viewer);
+        $this->get('/admin/staff')->assertOk();
+        $this->get('/admin/staff/'.$target->id)->assertOk();
+
+        $this->get('/admin/staff/create')->assertForbidden();
+        $this->post('/admin/staff', [
+            'name'                  => 'Not Allowed',
+            'email'                 => 'not.allowed@example.test',
+            'password'              => 'long-enough-pass',
+            'password_confirmation' => 'long-enough-pass',
+            'role_id'               => $viewerRole->id,
+        ])->assertForbidden();
+        $this->post('/admin/staff/'.$target->id.'/role', ['role_id' => $viewerRole->id])->assertForbidden();
+        $this->post('/admin/staff/'.$target->id.'/suspend')->assertForbidden();
+        $this->post('/admin/staff/'.$target->id.'/restore')->assertForbidden();
+
+        $target->refresh();
+        $this->assertSame('active', $target->status->value);
+        $this->assertSame(['support'], $target->roles->pluck('name')->all());
+    }
+
+    /**
+     * The acting user holds the seeded `admin` role, which Gate::before grants
+     * every ability — but hasRole('super_admin') is false, so store() would
+     * abort 403 on the super_admin option. Create.vue disables it instead of
+     * offering a choice the server rejects.
+     */
+    public function test_admin_staff_create_marks_super_admin_unassignable(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/staff/create')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Staff/Create')
+                ->has('roles', 5)
+                ->where('roles.0.name', 'super_admin')
+                ->where('roles.0.display_name', 'Super Admin')
+                ->where('roles.0.assignable', false)
+                ->where('roles.1.name', 'admin')
+                ->where('roles.1.assignable', true)
+            );
+    }
+
+    public function test_admin_staff_store_creates_the_account_with_its_role(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->post('/admin/staff', [
+                'name'                  => 'Nusrat Moderator',
+                'email'                 => 'nusrat.mod@example.test',
+                'password'              => 'sup3r-secret-pass',
+                'password_confirmation' => 'sup3r-secret-pass',
+                'role_id'               => Role::where('name', 'moderator')->value('id'),
+            ])
+            ->assertRedirect(route('admin.staff'))
+            ->assertSessionHas('success');
+
+        $created = User::where('email', 'nusrat.mod@example.test')->firstOrFail();
+        $this->assertSame('active', $created->status->value);
+        $this->assertNotNull($created->email_verified_at);
+        $this->assertSame(['moderator'], $created->roles->pluck('name')->all());
+        $this->assertDatabaseHas('audit_logs', [
+            'action'       => 'staff.created',
+            'auditable_id' => $created->id,
+        ]);
+    }
+
+    public function test_admin_staff_store_blocks_super_admin_escalation(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->post('/admin/staff', [
+                'name'                  => 'Backdoor Boss',
+                'email'                 => 'backdoor@example.test',
+                'password'              => 'sup3r-secret-pass',
+                'password_confirmation' => 'sup3r-secret-pass',
+                'role_id'               => Role::where('name', 'super_admin')->value('id'),
+            ])
+            ->assertForbidden();
+
+        $this->assertNull(User::where('email', 'backdoor@example.test')->first());
+    }
+
+    /** Admin/Staff/Show.vue reads the profile, role permissions and audit trail. */
+    public function test_admin_staff_show_renders_permissions_and_activity(): void
+    {
+        $staff = $this->seedStaff('support', [
+            'name'  => 'Rumana Support',
+            'email' => 'rumana.support@example.test',
+        ]);
+        AuditLog::create([
+            'user_id'    => $staff->id,
+            'action'     => 'staff.role_changed',
+            'module'     => 'staff',
+            'created_at' => now()->subHour(),
+        ]);
+
+        $supportRole = Role::where('name', 'support')->first();
+        $expected    = $supportRole->permissions->pluck('name')->sort()->values()->all();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/staff/'.$staff->id)
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Staff/Show')
+                ->where('user.name', 'Rumana Support')
+                ->where('user.email', 'rumana.support@example.test')
+                ->where('user.status', 'active')
+                ->where('user.suspended_at', null)
+                ->where('user.is_self', false)
+                ->has('role_permissions', 1)
+                ->where('role_permissions.0.display_name', 'Support')
+                ->where('role_permissions.0.permissions', $expected)
+                ->where('current_role_id', $supportRole->id)
+                ->has('roles', 5)
+                ->has('logs', 1)
+                ->where('logs.0.action', 'staff.role_changed')
+            );
+    }
+
+    public function test_admin_staff_show_404s_for_a_non_staff_user(): void
+    {
+        $shopper = User::factory()->create(['email' => 'plain.shopper@example.test']);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/staff/'.$shopper->id)
+            ->assertNotFound();
+    }
+
+    /**
+     * suspend() used to end with `$user->tokens()->delete()`, but this app never
+     * installed Sanctum (User has no HasApiTokens trait), so suspending any
+     * staff account threw BadMethodCallException and 500'd. `suspended_at` was
+     * missing from User::$fillable too, so the timestamp was dropped as well.
+     */
+    public function test_admin_staff_suspend_records_the_timestamp_and_purges_sessions(): void
+    {
+        config(['session.driver' => 'database']);
+        $staff = $this->seedStaff('support');
+
+        DB::table('sessions')->insert([
+            'id'            => 'staff-session-1',
+            'user_id'       => $staff->id,
+            'ip_address'    => '127.0.0.1',
+            'user_agent'    => 'phpunit',
+            'payload'       => 'e30=',
+            'last_activity' => now()->getTimestamp(),
+        ]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/staff')
+            ->post('/admin/staff/'.$staff->id.'/suspend')
+            ->assertRedirect('/admin/staff')
+            ->assertSessionHas('success');
+
+        $staff->refresh();
+        $this->assertSame('suspended', $staff->status->value);
+        $this->assertNotNull($staff->suspended_at);
+        // The suspended account is signed out of every browser it was using.
+        $this->assertDatabaseMissing('sessions', ['id' => 'staff-session-1']);
+    }
+
+    public function test_admin_staff_cannot_suspend_themselves(): void
+    {
+        $admin = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->post('/admin/staff/'.$admin->id.'/suspend')
+            ->assertForbidden();
+
+        $this->assertSame('active', $admin->fresh()->status->value);
+    }
+
+    public function test_admin_staff_restore_clears_the_suspension(): void
+    {
+        $staff = $this->seedStaff('finance');
+        $staff->update(['status' => 'suspended', 'suspended_at' => now()]);
+        $this->assertNotNull($staff->fresh()->suspended_at);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/staff/'.$staff->id)
+            ->post('/admin/staff/'.$staff->id.'/restore')
+            ->assertRedirect('/admin/staff/'.$staff->id);
+
+        $staff->refresh();
+        $this->assertSame('active', $staff->status->value);
+        $this->assertNull($staff->suspended_at);
+    }
+
+    /** assignRole() syncs, so a staff member ends up holding exactly one role. */
+    public function test_admin_staff_assign_role_syncs_to_a_single_role(): void
+    {
+        $staff = $this->seedStaff('support');
+        $staff->roles()->attach(Role::where('name', 'finance')->value('id'));
+        $this->assertSame(2, $staff->roles()->count());
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/staff/'.$staff->id)
+            ->post('/admin/staff/'.$staff->id.'/role', [
+                'role_id' => Role::where('name', 'moderator')->value('id'),
+            ])
+            ->assertRedirect('/admin/staff/'.$staff->id)
+            ->assertSessionHas('success');
+
+        $this->assertSame(['moderator'], $staff->fresh()->roles->pluck('name')->all());
+        $this->assertDatabaseHas('audit_logs', [
+            'action'       => 'staff.role_changed',
+            'auditable_id' => $staff->id,
+        ]);
+    }
+
+    public function test_admin_staff_cannot_demote_the_last_super_admin(): void
+    {
+        $boss = $this->seedStaff('super_admin', ['email' => 'boss@example.test']);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->post('/admin/staff/'.$boss->id.'/role', [
+                'role_id' => Role::where('name', 'moderator')->value('id'),
+            ])
+            ->assertForbidden();
+
+        $this->assertTrue($boss->fresh()->hasRole('super_admin'));
+    }
+
+    /**
+     * `admin_notes` was missing from User::$fillable alongside `suspended_at`,
+     * so the reason Admin\UserController::suspend() validates as required was
+     * thrown away — the suspension recorded neither a timestamp nor a why.
+     */
+    public function test_admin_user_suspension_persists_the_reason_and_timestamp(): void
+    {
+        $shopper = User::factory()->create(['email' => 'suspend.target@example.test']);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/users/'.$shopper->id)
+            ->post('/admin/users/'.$shopper->id.'/suspend', [
+                'reason' => 'Chargeback ring — three disputed orders.',
+            ])
+            ->assertRedirect('/admin/users/'.$shopper->id);
+
+        $shopper->refresh();
+        $this->assertSame('suspended', $shopper->status->value);
+        $this->assertNotNull($shopper->suspended_at);
+        $this->assertSame('Chargeback ring — three disputed orders.', $shopper->admin_notes);
     }
 
     public function test_contact_renders_the_inertia_page(): void

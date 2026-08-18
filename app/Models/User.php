@@ -26,6 +26,18 @@ class User extends Authenticatable implements MustVerifyEmail
         // FraudService writes these via update(); without them the write was
         // silently dropped by mass-assignment protection.
         'risk_score', 'risk_flags',
+        // Same story: real nullable columns that every writer passes to
+        // update() and mass assignment threw away. `suspended_at` is set by
+        // Admin\StaffController::suspend() and Admin\UserController::suspend()
+        // (and cleared by both restore()s), so no suspension ever recorded when
+        // it happened; `admin_notes` holds the suspension reason and the note
+        // saved by Admin\UserController::note(), which never persisted at all.
+        'suspended_at', 'admin_notes',
+        // Staff accounts are created pre-verified on purpose
+        // (Admin\StaffController::store(), CreateSuperAdminCommand); without
+        // this the explicit `email_verified_at => now()` was discarded and every
+        // account created through the admin panel landed unverified.
+        'email_verified_at',
     ];
 
     protected $hidden = ['password', 'remember_token'];
