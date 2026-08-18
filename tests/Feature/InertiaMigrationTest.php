@@ -13,6 +13,7 @@ use App\Models\FraudEvent;
 use App\Models\FraudReview;
 use App\Models\MessageReport;
 use App\Models\Order;
+use App\Models\Permission;
 use App\Models\PhoneOtp;
 use App\Models\Promotion;
 use App\Models\Role;
@@ -1812,6 +1813,172 @@ class InertiaMigrationTest extends TestCase
                 ->where('ticket.messages.0.is_staff', false)
             )
             ->assertDontSee('possible chargeback fraud', false);
+    }
+
+    // ── Admin roles + permissions (checkpoint 39) ───────────────────────
+
+    /**
+     * Admin/Roles/Index.vue reads a plain `roles` list (no paginator — roles are
+     * few), each with its member count, sorted permission names and an
+     * `edit_url` that is null for a protected role. index() authorizes
+     * `roles.view`; the seeder creates 5 roles, ordered by id.
+     */
+    public function test_admin_roles_index_renders_the_role_cards(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/roles')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Roles/Index')
+                ->has('roles', 5)
+                ->has('roles.0', fn (Assert $r) => $r
+                    ->where('name', 'super_admin')
+                    ->where('display_name', 'Super Admin')
+                    ->where('is_protected', true)
+                    ->where('users_count', 0)
+                    // No edit page for a protected role — edit() aborts 403.
+                    ->where('edit_url', null)
+                    ->etc()
+                )
+                ->has('roles.1', fn (Assert $r) => $r
+                    ->where('name', 'admin')
+                    ->where('is_protected', false)
+                    // The acting super-admin holds this role.
+                    ->where('users_count', 1)
+                    ->etc()
+                )
+                ->where('roles.1.edit_url', route('admin.roles.edit', Role::where('name', 'admin')->value('id')))
+            );
+    }
+
+    /** Every role route authorizes a roles.* permission; a bare admin 403s. */
+    public function test_admin_roles_require_the_role_permissions(): void
+    {
+        $role = Role::where('name', 'moderator')->first();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/roles')
+            ->assertForbidden();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/roles/'.$role->id.'/edit')
+            ->assertForbidden();
+
+        $this->actingAs($this->makeAdmin())
+            ->post('/admin/roles', ['name' => 'nope', 'display_name' => 'Nope'])
+            ->assertForbidden();
+    }
+
+    /**
+     * Regression guard for `Role::$fillable`: it omitted `description`, so the
+     * create form's Description field was silently discarded on every write.
+     */
+    public function test_admin_roles_store_persists_the_description(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->post('/admin/roles', [
+                'name'         => 'content_manager',
+                'display_name' => 'Content Manager',
+                'description'  => 'Edits listings and categories, no finance.',
+            ])
+            ->assertSessionHas('success');
+
+        $role = Role::where('name', 'content_manager')->first();
+        $this->assertNotNull($role);
+        $this->assertSame('Edits listings and categories, no finance.', $role->description);
+        $this->assertTrue($role->is_admin_role);
+        $this->assertFalse($role->is_protected);
+        // store() sends staff to the edit page to assign permissions.
+        $this->assertSame(0, $role->permissions()->count());
+    }
+
+    /** The slug is `regex:/^[a-z_]+$/` — the Vue form surfaces form.errors.name. */
+    public function test_admin_roles_store_rejects_a_non_slug_name(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/roles')
+            ->post('/admin/roles', ['name' => 'Content Manager 2', 'display_name' => 'Content Manager'])
+            ->assertSessionHasErrors('name');
+
+        $this->assertSame(5, Role::count());
+    }
+
+    /**
+     * Admin/Roles/Edit.vue reads the role, the full permission matrix grouped by
+     * `permissions.group`, and the granted ids as `assigned`.
+     */
+    public function test_admin_roles_edit_renders_the_permission_matrix(): void
+    {
+        $role   = Role::where('name', 'moderator')->first();
+        $perms  = $role->permissions->pluck('id')->all();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/roles/'.$role->id.'/edit')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Roles/Edit')
+                ->where('role.name', 'moderator')
+                ->where('role.display_name', 'Moderator')
+                ->has('groups', 21)
+                ->has('groups.0', fn (Assert $g) => $g
+                    ->where('group', 'audit')
+                    ->where('label', 'Audit')
+                    ->has('permissions', 1)
+                    ->etc()
+                )
+                ->where('assigned', $perms)
+            );
+    }
+
+    /** update() syncs permissions and audits the change. */
+    public function test_admin_roles_update_syncs_permissions_and_description(): void
+    {
+        $role = Role::create([
+            'name'          => 'content_manager',
+            'display_name'  => 'Content Manager',
+            'is_admin_role' => true,
+        ]);
+        $keep = Permission::where('name', 'listings.view')->value('id');
+        $add  = Permission::where('name', 'categories.manage')->value('id');
+        $drop = Permission::where('name', 'users.delete')->value('id');
+        $role->permissions()->sync([$keep, $drop]);
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->patch('/admin/roles/'.$role->id, [
+                'display_name' => 'Content Lead',
+                'description'  => 'Now also owns categories.',
+                'permissions'  => [$keep, $add],
+            ])
+            ->assertRedirect(route('admin.roles'))
+            ->assertSessionHas('success');
+
+        $role->refresh();
+        $this->assertSame('Content Lead', $role->display_name);
+        // Same fillable regression as store(): description used to be dropped.
+        $this->assertSame('Now also owns categories.', $role->description);
+        $this->assertEqualsCanonicalizing([$keep, $add], $role->permissions->pluck('id')->all());
+    }
+
+    /**
+     * The seeder marks `super_admin` protected, and both edit() and update()
+     * abort 403 on a protected role. `is_protected` was missing from
+     * Role::$fillable, so the flag never persisted and the guard was dead code —
+     * anyone with the roles permission could rewrite super_admin's permissions.
+     */
+    public function test_protected_roles_cannot_be_edited(): void
+    {
+        $role = Role::where('name', 'super_admin')->first();
+        $this->assertTrue($role->is_protected);
+
+        $this->actingAs($this->makeSuperAdmin());
+        $this->get('/admin/roles/'.$role->id.'/edit')->assertForbidden();
+        $this->patch('/admin/roles/'.$role->id, [
+            'display_name' => 'Hijacked',
+            'permissions'  => [],
+        ])->assertForbidden();
+
+        $this->assertSame('Super Admin', $role->fresh()->display_name);
+        $this->assertGreaterThan(0, $role->permissions()->count());
     }
 
     public function test_contact_renders_the_inertia_page(): void
