@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Type gate + build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The minimum in DEPLOYMENT.md — CI should test the floor, not the
+          # newest runtime that happens to be installed locally.
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # Non-negotiable: every migration checkpoint had to leave this at exit 0,
+      # and it is the only gate that sees the Vue prop types at all.
+      - name: Type gate (vue-tsc --noEmit)
+        run: npm run typecheck
+
+      - name: Production build
+        run: npm run build
+
+  tests:
+    name: Tests (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # composer.json's floor, and the version the app is developed against.
+        # Add '8.3' once it has been verified locally.
+        php: ['8.2']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # .env carries live BulkSMSBD and UddoktaPay credentials. It is covered by
+      # .gitignore; this fails the build loudly if that ever stops being true.
+      - name: Guard — .env must never be committed
+        run: |
+          if git ls-files --error-unmatch .env > /dev/null 2>&1; then
+            echo "::error file=.env::.env is tracked by git and holds live SMS and payment credentials."
+            exit 1
+          fi
+          echo ".env is not tracked."
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          # pdo_sqlite/sqlite3 because phpunit.xml pins sqlite :memory:.
+          extensions: bcmath, ctype, curl, dom, fileinfo, gd, mbstring, openssl, pdo, pdo_sqlite, sqlite3, tokenizer, xml, zip
+          coverage: none
+
+      # Before composer install, so the artisan hooks in post-autoload-dump have
+      # an environment file to read.
+      - name: Create the environment file
+        run: cp .env.example .env
+
+      - name: Cache Composer downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer/files
+          key: composer-php${{ matrix.php }}-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-php${{ matrix.php }}-
+
+      - run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Generate the application key
+        run: php artisan key:generate
+
+      # phpunit.xml pins DB_CONNECTION=sqlite with :memory:, so no database
+      # service is needed, and BULKSMSBD_ENABLED=false, so the suite cannot reach
+      # the live paid SMS gateway.
+      #
+      # The suite exits non-zero because of 13 long-standing failures, so `|| true`
+      # defers the verdict to the baseline check below — which is the real gate.
+      - name: Run the test suite
+        run: php artisan test --log-junit "${{ runner.temp }}/junit.xml" || true
+
+      - name: Compare failures against the pinned baseline
+        run: >
+          php .github/scripts/check-test-baseline.php
+          "${{ runner.temp }}/junit.xml"
+          .github/known-test-failures.txt

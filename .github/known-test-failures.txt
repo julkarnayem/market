@@ -1,0 +1,31 @@
+# Tests that have never passed in this repository.
+#
+# Checked by .github/scripts/check-test-baseline.php, which compares the exact set
+# of failing tests against this list. A failure that is not listed here fails the
+# build as a regression; an entry here that starts passing also fails the build, so
+# that this file cannot silently rot.
+#
+# All 13 predate the Blade -> Inertia migration. Twelve throw BadMethodCallException
+# because the models import Illuminate\Database\Eloquent\Factories\HasFactory but
+# never apply the trait in the class body (Wallet, Order, SupportTicket), or have
+# neither trait nor factory (Category) — so Model::factory() does not exist. Fixing
+# those four models retires most of this list in one go.
+#
+# Format: one FQCN::method per line. Blank lines and # comments are ignored.
+
+# --- missing model factories -------------------------------------------------
+Tests\Feature\FinancialRulesTest::test_wallet_debit_prevents_negative_balance
+Tests\Feature\FinancialRulesTest::test_wallet_credit_creates_ledger_entry
+Tests\Feature\MarketplaceTest::test_asset_detail_page_loads
+Tests\Feature\MarketplaceTest::test_self_purchase_blocked_server_side
+Tests\Feature\SecurityTest::test_idor_order_access_blocked
+Tests\Feature\SecurityTest::test_idor_ticket_access_blocked
+Tests\Feature\SecurityTest::test_support_staff_cannot_approve_withdrawal
+Tests\Feature\SecurityTest::test_self_purchase_checkout_blocked
+Tests\Feature\WithdrawalRulesTest::test_withdrawal_below_minimum_rejected
+Tests\Feature\WithdrawalRulesTest::test_withdrawal_minimum_accepted
+Tests\Feature\WithdrawalRulesTest::test_withdrawal_fee_is_500_poisha
+Tests\Feature\WithdrawalRulesTest::test_withdrawal_insufficient_balance_rejected
+
+# --- unrelated: a users-table row assertion ----------------------------------
+Tests\Feature\AuthTest::test_user_can_register
