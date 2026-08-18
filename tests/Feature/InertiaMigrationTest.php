@@ -20,6 +20,7 @@ use App\Models\Promotion;
 use App\Models\Role;
 use App\Models\SellerVerification;
 use App\Models\SmsLog;
+use App\Models\SupportResponseTemplate;
 use App\Models\SupportTicket;
 use App\Models\User;
 use App\Models\Wallet;
@@ -2310,6 +2311,202 @@ class InertiaMigrationTest extends TestCase
         $this->assertSame('suspended', $shopper->status->value);
         $this->assertNotNull($shopper->suspended_at);
         $this->assertSame('Chargeback ring — three disputed orders.', $shopper->admin_notes);
+    }
+
+    /**
+     * A canned reply. SupportResponseTemplate has no factory, and `created_at`
+     * is not fillable, so the timestamp is force-filled where a deterministic
+     * latest() order matters.
+     */
+    private function seedTemplate(User $author, array $attrs = [], ?int $minutesAgo = null): SupportResponseTemplate
+    {
+        $t = SupportResponseTemplate::create(array_merge([
+            'title'      => 'Refund timeline',
+            'category'   => 'Refunds',
+            'body'       => "Hi {user_name},\n\nOrder {order_number} is being refunded.",
+            'is_active'  => true,
+            'created_by' => $author->id,
+        ], $attrs));
+
+        if ($minutesAgo !== null) {
+            $t->forceFill(['created_at' => now()->subMinutes($minutesAgo)])->save();
+        }
+
+        return $t;
+    }
+
+    /**
+     * Admin/SupportTemplates/Index.vue reads templates already grouped by
+     * category — a null/empty one lands in a "General" bucket, as in the Blade —
+     * plus the placeholder list the create form documents.
+     */
+    public function test_admin_support_templates_renders_grouped_by_category(): void
+    {
+        $admin = $this->makeSuperAdmin();
+        $this->seedTemplate($admin, ['title' => 'Refund timeline'], 30);
+        $this->seedTemplate($admin, ['title' => 'Refund declined'], 60);
+        $this->seedTemplate($admin, [
+            'title'     => 'Welcome',
+            'category'  => null,
+            'body'      => 'Hello {user_name}!',
+            'is_active' => false,
+        ], 90);
+
+        $this->actingAs($admin)
+            ->get('/admin/support-templates')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/SupportTemplates/Index')
+                ->has('groups', 2)
+                // sortKeys(): General before Refunds.
+                ->where('groups.0.label', 'General')
+                ->has('groups.0.templates', 1)
+                ->where('groups.0.templates.0.title', 'Welcome')
+                ->where('groups.0.templates.0.category', null)
+                ->where('groups.0.templates.0.body', 'Hello {user_name}!')
+                ->where('groups.0.templates.0.is_active', false)
+                ->where('groups.0.templates.0.creator', $admin->name)
+                ->has('groups.0.templates.0.created')
+                ->where('groups.1.label', 'Refunds')
+                ->has('groups.1.templates', 2)
+                // latest() first.
+                ->where('groups.1.templates.0.title', 'Refund timeline')
+                ->where('groups.1.templates.1.title', 'Refund declined')
+                ->where('groups.1.templates.0.is_active', true)
+                ->where('variables', SupportResponseTemplate::VARIABLES)
+            );
+    }
+
+    /**
+     * Both sidebars gate the Templates link on `tickets.manage` and all four
+     * controller methods authorize the same — unlike the ticket queue, there is
+     * no read-only tier here, so the seeded moderator (tickets.view only) is out.
+     */
+    public function test_admin_support_templates_require_tickets_manage(): void
+    {
+        $author   = $this->makeSuperAdmin();
+        $template = $this->seedTemplate($author);
+
+        $moderator = User::factory()->create();
+        $moderator->roles()->attach(Role::where('name', 'moderator')->value('id'));
+        $this->assertTrue($moderator->hasPermission('tickets.view'));
+        $this->assertFalse($moderator->hasPermission('tickets.manage'));
+
+        foreach ([$this->makeAdmin(), $moderator] as $user) {
+            $this->actingAs($user);
+            $this->get('/admin/support-templates')->assertForbidden();
+            $this->post('/admin/support-templates', [
+                'title' => 'Nope',
+                'body'  => 'Nope.',
+            ])->assertForbidden();
+            $this->patch('/admin/support-templates/'.$template->id, [
+                'title' => 'Hijacked',
+                'body'  => 'Hijacked.',
+            ])->assertForbidden();
+        }
+
+        $this->assertSame(1, SupportResponseTemplate::count());
+        $this->assertSame('Refund timeline', $template->fresh()->title);
+    }
+
+    public function test_admin_support_templates_store_creates_an_active_template(): void
+    {
+        $admin = $this->makeSuperAdmin();
+
+        $this->actingAs($admin)
+            ->from('/admin/support-templates')
+            ->post('/admin/support-templates', [
+                'title'    => 'Payout delay',
+                'category' => 'Payments',
+                'body'     => 'Hi {user_name}, payouts settle within 3 business days.',
+            ])
+            ->assertRedirect('/admin/support-templates')
+            ->assertSessionHas('success');
+
+        $t = SupportResponseTemplate::firstWhere('title', 'Payout delay');
+        $this->assertNotNull($t);
+        $this->assertSame('Payments', $t->category);
+        $this->assertTrue($t->is_active);
+        $this->assertSame($admin->id, $t->created_by);
+        $this->assertDatabaseHas('audit_logs', [
+            'action'       => 'support_template.created',
+            'auditable_id' => $t->id,
+        ]);
+    }
+
+    /** The create form renders form.errors.title / form.errors.body. */
+    public function test_admin_support_templates_store_validates_the_form(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/support-templates')
+            ->post('/admin/support-templates', ['title' => '', 'category' => '', 'body' => ''])
+            ->assertRedirect('/admin/support-templates')
+            ->assertSessionHasErrors(['title', 'body']);
+
+        $this->assertSame(0, SupportResponseTemplate::count());
+    }
+
+    public function test_admin_support_templates_update_edits_the_template(): void
+    {
+        $admin    = $this->makeSuperAdmin();
+        $template = $this->seedTemplate($admin);
+
+        $this->actingAs($admin)
+            ->from('/admin/support-templates')
+            ->patch('/admin/support-templates/'.$template->id, [
+                'title'     => 'Refund timeline (7 days)',
+                'category'  => 'Payments',
+                'body'      => 'Hi {user_name}, refunds land within 7 days.',
+                'is_active' => true,
+            ])
+            ->assertRedirect('/admin/support-templates')
+            ->assertSessionHas('success');
+
+        $template->refresh();
+        $this->assertSame('Refund timeline (7 days)', $template->title);
+        $this->assertSame('Payments', $template->category);
+        $this->assertSame('Hi {user_name}, refunds land within 7 days.', $template->body);
+        $this->assertTrue($template->is_active);
+        $this->assertDatabaseHas('audit_logs', [
+            'action'       => 'support_template.updated',
+            'auditable_id' => $template->id,
+        ]);
+    }
+
+    /**
+     * Regression guard. The Blade's `is_active` checkbox omitted the key when
+     * unchecked, so validate() returned no `is_active` and update() left the flag
+     * untouched: a template could be created active and never turned off. (The
+     * panel it lived in was unreachable anyway — an Alpine `x-show` on a layout
+     * that never loads Alpine, under a global `[x-cloak]{display:none}`.) The Vue
+     * page always sends a real JSON boolean, both ways.
+     */
+    public function test_admin_support_templates_can_be_deactivated_and_reactivated(): void
+    {
+        $admin    = $this->makeSuperAdmin();
+        $template = $this->seedTemplate($admin);
+        $this->assertTrue($template->is_active);
+
+        $this->actingAs($admin)
+            ->from('/admin/support-templates')
+            ->patch('/admin/support-templates/'.$template->id, [
+                'title'     => $template->title,
+                'category'  => $template->category,
+                'body'      => $template->body,
+                'is_active' => false,
+            ])
+            ->assertRedirect('/admin/support-templates');
+
+        $this->assertFalse($template->fresh()->is_active);
+
+        $this->patch('/admin/support-templates/'.$template->id, [
+            'title'     => $template->title,
+            'category'  => $template->category,
+            'body'      => $template->body,
+            'is_active' => true,
+        ])->assertRedirect('/admin/support-templates');
+
+        $this->assertTrue($template->fresh()->is_active);
     }
 
     public function test_contact_renders_the_inertia_page(): void

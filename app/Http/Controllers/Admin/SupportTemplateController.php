@@ -5,7 +5,9 @@ use App\Http\Controllers\Controller;
 use App\Models\SupportResponseTemplate;
 use App\Services\AuditLogger;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
+use Inertia\Inertia;
 
 class SupportTemplateController extends Controller
 {
@@ -13,9 +15,32 @@ class SupportTemplateController extends Controller
 
     public function index()
     {
+        // Matches the permission both sidebars gate the nav item on.
         $this->authorize('tickets.manage');
-        $templates = SupportResponseTemplate::with('creator')->latest()->get()->groupBy('category');
-        return view('admin.support-templates', compact('templates'));
+
+        $groups = SupportResponseTemplate::with('creator')->latest()->get()
+            // A null/empty category is its own bucket, as in the Blade.
+            ->groupBy(fn (SupportResponseTemplate $t) => $t->category ?: 'General')
+            ->sortKeys()
+            ->map(fn (Collection $group, string $label) => [
+                'label'     => $label,
+                'templates' => $group->map(fn (SupportResponseTemplate $t) => [
+                    'id'        => $t->id,
+                    'title'     => $t->title,
+                    'category'  => $t->category,
+                    'body'      => $t->body,
+                    'is_active' => (bool) $t->is_active,
+                    'creator'   => $t->creator?->name,
+                    'created'   => $t->created_at->format('d M Y'),
+                ])->values()->all(),
+            ])->values()->all();
+
+        return Inertia::render('Admin/SupportTemplates/Index', [
+            'groups' => $groups,
+            // The real substitution list, so the form documents what render()
+            // will actually replace instead of the Blade's "etc.".
+            'variables' => SupportResponseTemplate::VARIABLES,
+        ]);
     }
 
     public function store(Request $request)
