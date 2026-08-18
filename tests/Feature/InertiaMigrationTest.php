@@ -24,6 +24,7 @@ use App\Models\SupportResponseTemplate;
 use App\Models\SupportTicket;
 use App\Models\User;
 use App\Models\Wallet;
+use Carbon\Carbon;
 use Illuminate\Auth\Notifications\VerifyEmail as VerifyEmailNotification;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
@@ -2507,6 +2508,166 @@ class InertiaMigrationTest extends TestCase
         ])->assertRedirect('/admin/support-templates');
 
         $this->assertTrue($template->fresh()->is_active);
+    }
+
+    // ── Admin reports (checkpoint 42) ────────────────────────────────────
+
+    /**
+     * A paid order, which is what the money metrics and the daily table read.
+     * Order's factory is broken so the graph is built with create(); `paid_at`
+     * is fillable, so the range filter can be exercised without force-filling.
+     */
+    private function seedPaidOrder(Carbon $paidAt): Order
+    {
+        $category = Category::create([
+            'name' => 'Report Goods', 'slug' => 'report-goods', 'is_active' => true, 'position' => 1,
+        ]);
+        $seller = User::factory()->create(['name' => 'Rina Reporter']);
+        $buyer  = User::factory()->create(['name' => 'Babul Buyer']);
+        $asset  = Asset::factory()->create([
+            'user_id' => $seller->id, 'category_id' => $category->id, 'title' => 'Reported Page',
+        ]);
+
+        return Order::create([
+            'reference'           => 'REF-RPT-'.$buyer->id,
+            'order_number'        => 'ORD-RPT-'.$buyer->id,
+            'buyer_user_id'       => $buyer->id,
+            'seller_user_id'      => $seller->id,
+            'asset_id'            => $asset->id,
+            'quantity'            => 1,
+            'unit_price'          => 250000,
+            'subtotal'            => 250000,
+            'seller_fee_bp'       => 1000,
+            'seller_fee_amount'   => 25000,
+            'buyer_fee_amount'    => 5000,
+            'platform_commission' => 30000,
+            'buyer_total'         => 255000,
+            'seller_earning'      => 225000,
+            'currency'            => 'BDT',
+            'payment_status'      => 'paid',
+            'paid_at'             => $paidAt,
+        ]);
+    }
+
+    /**
+     * Admin/Reports/Index.vue reads a fixed 15-metric list (money already run
+     * through Money::format), the echoed from/to the date inputs bind to, and
+     * the server-computed quick ranges.
+     */
+    public function test_admin_reports_renders_the_metric_grid(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/reports')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Reports/Index')
+                ->has('metrics', 15)
+                ->where('metrics.0.key', 'new_users')
+                ->where('metrics.0.label', 'New Users')
+                ->where('metrics.0.is_money', false)
+                ->where('metrics.6.key', 'order_volume')
+                ->where('metrics.6.is_money', true)
+                ->where('metrics.6.value', '৳0.00')
+                ->has('daily', 0)
+                ->where('filters.from', now()->subDays(30)->format('Y-m-d'))
+                ->where('filters.to', now()->format('Y-m-d'))
+                ->has('filters.label')
+                ->has('presets', 4)
+                ->where('presets.0.label', 'Today')
+                ->where('presets.0.from', now()->format('Y-m-d'))
+            );
+    }
+
+    public function test_admin_reports_requires_the_view_permission(): void
+    {
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/reports')
+            ->assertForbidden();
+    }
+
+    /** Every metric is bounded by the range, and the daily table follows it. */
+    public function test_admin_reports_only_counts_rows_inside_the_range(): void
+    {
+        $this->seedPaidOrder(now()->subDays(100));
+        User::factory()->create(['created_at' => now()->subDays(100)]);
+
+        // A window around the 100-day-old rows. Only the extra user was *created*
+        // then — seedPaidOrder's buyer/seller and the acting admin are created
+        // now, so they fall outside it, while the order's paid_at is inside.
+        $this->actingAs($this->makeSuperAdmin())
+            ->get('/admin/reports?from='.now()->subDays(101)->format('Y-m-d').'&to='.now()->subDays(99)->format('Y-m-d'))
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('metrics.0.value', '1')          // new_users
+                ->where('metrics.4.value', '0')          // orders (by created_at)
+                ->where('metrics.5.value', '1')          // paid_orders
+                ->where('metrics.6.value', '৳2,550.00')  // order_volume
+                ->where('metrics.7.value', '৳300.00')    // platform_commission
+                ->where('metrics.8.value', '৳250.00')    // seller_fees
+                ->where('metrics.9.value', '৳50.00')     // buyer_fees
+                ->has('daily', 1)
+                ->where('daily.0.orders', 1)
+                ->where('daily.0.volume', '৳2,550.00')
+            );
+
+        // The same order is outside the default 30-day window.
+        $this->get('/admin/reports')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('metrics.5.value', '0')
+                ->where('metrics.6.value', '৳0.00')
+                ->has('daily', 0)
+            );
+    }
+
+    /**
+     * Regression guard: the raw request values went straight into
+     * Carbon::parse(), so a malformed date threw InvalidFormatException and the
+     * page 500'd. It is a validation error now.
+     */
+    public function test_admin_reports_rejects_a_malformed_date(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/reports')
+            ->get('/admin/reports?from=garbage')
+            ->assertRedirect('/admin/reports')
+            ->assertSessionHasErrors('from');
+    }
+
+    /** A reversed range used to render zeroes silently; the form now says why. */
+    public function test_admin_reports_rejects_a_reversed_range(): void
+    {
+        $this->actingAs($this->makeSuperAdmin())
+            ->from('/admin/reports')
+            ->get('/admin/reports?from='.now()->format('Y-m-d').'&to='.now()->subDays(7)->format('Y-m-d'))
+            ->assertRedirect('/admin/reports')
+            ->assertSessionHasErrors('to');
+    }
+
+    /**
+     * The CSV renders the same metric list as the page. It used to derive its
+     * own labels with ucwords() ("Withdrawal Amount") while the view hardcoded
+     * different ones ("Withdrawal Payouts"), and decided what was money by
+     * substring-matching the key.
+     */
+    public function test_admin_reports_exports_the_same_metrics_as_csv(): void
+    {
+        $this->seedPaidOrder(now()->subDay());
+
+        $response = $this->actingAs($this->makeSuperAdmin())->get('/admin/reports?export=csv');
+
+        $response->assertOk();
+        $this->assertStringContainsString('text/csv', (string) $response->headers->get('Content-Type'));
+        $this->assertStringContainsString(
+            'attachment; filename="report-'.now()->subDays(30)->format('Y-m-d').'-to-'.now()->format('Y-m-d').'.csv"',
+            (string) $response->headers->get('Content-Disposition'),
+        );
+
+        $csv = (string) $response->getContent();
+        $this->assertStringStartsWith("Metric,Value\n", $csv);
+        $this->assertStringContainsString('"Order Volume","৳2,550.00"', $csv);
+        $this->assertStringContainsString('"Withdrawal Payouts","৳0.00"', $csv);
+        $this->assertStringContainsString('"New Users","3"', $csv);
     }
 
     public function test_contact_renders_the_inertia_page(): void
