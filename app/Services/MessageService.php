@@ -72,6 +72,38 @@ class MessageService
         });
     }
 
+    /**
+     * Post a structured card into a conversation — currently custom offers.
+     *
+     * The card is attributed to whoever created it (not the system) so it
+     * renders on their side of the thread, and its payload lives in
+     * `messages.metadata` so the chat can render it without a second query.
+     */
+    public function sendCard(
+        Conversation $conversation,
+        User $sender,
+        string $messageType,
+        string $body,
+        array $metadata = [],
+    ): Message {
+        return DB::transaction(function () use ($conversation, $sender, $messageType, $body, $metadata) {
+            $message = Message::create([
+                'conversation_id' => $conversation->id,
+                'sender_user_id'  => $sender->id,
+                'message_type'    => $messageType,
+                'body'            => $body,
+                'metadata'        => $metadata,
+            ]);
+
+            $conversation->update([
+                'last_message_at' => now(),
+                'last_message_id' => $message->id,
+            ]);
+
+            return $message;
+        });
+    }
+
     /** Create an internal staff note (never visible to order participants). */
     public function addNote(Conversation $conversation, User $staff, string $body): ConversationNote
     {

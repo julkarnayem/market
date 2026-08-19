@@ -43,6 +43,7 @@ const form = useForm<{
     title: string;
     description: string;
     price_bdt: string;
+    inventory_type: 'single' | 'multiple' | 'unlimited';
     quantity: number;
     attributes: Record<string, string>;
     images: File[];
@@ -52,11 +53,45 @@ const form = useForm<{
     title: '',
     description: '',
     price_bdt: '',
+    inventory_type: 'single',
     quantity: 1,
     attributes: {},
     images: [],
     policy_accept: false,
 });
+
+/**
+ * What the seller is listing. Only Single accepts bids, and only Multiple
+ * carries a stock figure — the server enforces both, this just keeps the form
+ * honest about it.
+ */
+const INVENTORY_TYPES = [
+    {
+        value: 'single' as const,
+        label: 'Single / unique item',
+        hint: 'One of a kind. Buy Now and bidding both available.',
+    },
+    {
+        value: 'multiple' as const,
+        label: 'Multiple quantity',
+        hint: 'A stock of identical items that counts down as they sell. Buy Now only.',
+    },
+    {
+        value: 'unlimited' as const,
+        label: 'Unlimited stock',
+        hint: 'Never runs out — stays live after every sale. Buy Now only.',
+    },
+];
+
+// Single is one item and Unlimited never counts down, so neither shows the
+// field; keep the value at 1 so a switch away from Multiple can't leave a
+// stale stock figure behind.
+watch(
+    () => form.inventory_type,
+    (type) => {
+        if (type !== 'multiple') form.quantity = 1;
+    },
+);
 
 /** Roots that have at least one subcategory (matches the Blade filter). */
 const parentOptions = computed(() => props.categories.filter((c) => c.children.length));
@@ -113,6 +148,7 @@ const STEP_OF: Record<string, number> = {
     title: 2,
     description: 2,
     price_bdt: 4,
+    inventory_type: 4,
     quantity: 4,
     policy_accept: 5,
     images: 5,
@@ -317,6 +353,38 @@ function submit(asDraft: boolean) {
                 <div v-show="step === 4" class="card-p">
                     <h2 class="section-title mb-1">Price &amp; Quantity</h2>
                     <p class="section-sub mb-3">Set your selling price in BDT.</p>
+                    <!-- Inventory type: decided here and fixed for the life of
+                         the listing, because it governs whether bids are allowed
+                         and whether a sale consumes stock. -->
+                    <fieldset class="mb-3">
+                        <legend class="label">Listing type <span class="text-rose-500">*</span></legend>
+                        <div class="flex flex-col gap-2">
+                            <label
+                                v-for="t in INVENTORY_TYPES"
+                                :key="t.value"
+                                class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition-colors"
+                                :class="
+                                    form.inventory_type === t.value
+                                        ? 'border-brand-500 bg-brand-50'
+                                        : 'border-slate-200 hover:bg-slate-50'
+                                "
+                            >
+                                <input
+                                    v-model="form.inventory_type"
+                                    type="radio"
+                                    :value="t.value"
+                                    class="mt-0.5 flex-shrink-0"
+                                    name="inventory_type"
+                                />
+                                <span class="min-w-0">
+                                    <span class="block text-sm font-medium text-slate-900">{{ t.label }}</span>
+                                    <span class="block text-xs text-slate-500">{{ t.hint }}</span>
+                                </span>
+                            </label>
+                        </div>
+                        <p v-if="form.errors.inventory_type" class="field-error">{{ form.errors.inventory_type }}</p>
+                    </fieldset>
+
                     <div class="grid gap-3 sm:grid-cols-2">
                         <div>
                             <label class="label">Selling Price (৳) <span class="text-rose-500">*</span></label>
@@ -336,8 +404,8 @@ function submit(asDraft: boolean) {
                             </div>
                             <p v-if="form.errors.price_bdt" class="field-error">{{ form.errors.price_bdt }}</p>
                         </div>
-                        <div>
-                            <label class="label">Quantity <span class="text-rose-500">*</span></label>
+                        <div v-if="form.inventory_type === 'multiple'">
+                            <label class="label">Quantity in stock <span class="text-rose-500">*</span></label>
                             <input
                                 v-model.number="form.quantity"
                                 type="number"
@@ -347,8 +415,17 @@ function submit(asDraft: boolean) {
                                 max="9999"
                                 required
                             />
-                            <p class="field-hint">Use 1 for unique items.</p>
+                            <p class="field-hint">Counts down with each sale, then the listing goes unavailable.</p>
                             <p v-if="form.errors.quantity" class="field-error">{{ form.errors.quantity }}</p>
+                        </div>
+                        <div v-else class="self-end">
+                            <p class="field-hint">
+                                {{
+                                    form.inventory_type === 'single'
+                                        ? 'One unique item — quantity is fixed at 1.'
+                                        : 'Unlimited stock — this listing never sells out.'
+                                }}
+                            </p>
                         </div>
                     </div>
 

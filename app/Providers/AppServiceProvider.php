@@ -3,10 +3,13 @@ namespace App\Providers;
 
 use App\Contracts\SmsServiceInterface;
 use App\Models\Asset;
+use App\Models\Bid;
 use App\Models\Offer;
 use App\Policies\AssetPolicy;
+use App\Policies\BidPolicy;
 use App\Policies\OfferPolicy;
 use App\Services\AuditLogger;
+use App\Services\BidService;
 use App\Services\DisputeService;
 use App\Services\EarningReleaseService;
 use App\Services\FeeCalculator;
@@ -51,14 +54,20 @@ class AppServiceProvider extends ServiceProvider
             fn($a) => new FeeCalculator($a->make(SettingsService::class)));
         $this->app->singleton(ListingService::class,
             fn($a) => new ListingService($a->make(SettingsService::class)));
-        $this->app->singleton(OfferService::class,
-            fn($a) => new OfferService($a->make(SettingsService::class)));
+        $this->app->singleton(OfferService::class, fn($a) => new OfferService(
+            $a->make(SettingsService::class),
+            $a->make(MessageService::class),
+            $a->make(NotificationService::class),
+        ));
+        $this->app->singleton(BidService::class,
+            fn($a) => new BidService($a->make(NotificationService::class)));
         $this->app->singleton(OrderService::class, fn($a) => new OrderService(
             $a->make(FeeCalculator::class),
             $a->make(SettingsService::class),
             $a->make(UddoktaPayService::class),
             $a->make(AuditLogger::class),
             $a->make(WalletService::class),
+            $a->make(BidService::class),
         ));
         $this->app->singleton(WithdrawalService::class, fn($a) => new WithdrawalService(
             $a->make(SettingsService::class),
@@ -91,6 +100,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Gate::policy(Asset::class, AssetPolicy::class);
+        Gate::policy(Bid::class, BidPolicy::class);
         Gate::policy(Offer::class, OfferPolicy::class);
 
         // Super-admin bypass

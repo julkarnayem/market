@@ -2,6 +2,7 @@
 namespace App\Models;
 
 use App\Enums\AssetStatus;
+use App\Enums\InventoryType;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -15,7 +16,8 @@ class Asset extends Model
 
     protected $fillable = [
         'user_id','category_id','title','slug','description',
-        'price','quantity','available_quantity','sold_quantity','views_count',
+        'price','inventory_type','quantity','available_quantity','sold_quantity',
+        'accepted_bid_id','views_count',
         'status','is_featured','featured_start_at','featured_end_at',
         'reviewed_by','reviewed_at','rejection_reason',
         'admin_notes','changes_requested_note','policy_accepted_at',
@@ -24,10 +26,12 @@ class Asset extends Model
         return [
             'price'=>'integer','quantity'=>'integer',
             'available_quantity'=>'integer','sold_quantity'=>'integer','views_count'=>'integer',
+            'accepted_bid_id'=>'integer',
             'is_featured'=>'boolean',
             'featured_start_at'=>'datetime','featured_end_at'=>'datetime',
             'reviewed_at'=>'datetime','policy_accepted_at'=>'datetime',
             'status'=>AssetStatus::class,
+            'inventory_type'=>InventoryType::class,
         ];
     }
 
@@ -41,6 +45,9 @@ class Asset extends Model
     public function pendingEdit(): HasOne { return $this->hasOne(AssetEdit::class)->where('status','pending_edit_approval')->latest(); }
     public function offers(): HasMany     { return $this->hasMany(Offer::class); }
     public function activeOffers(): HasMany { return $this->hasMany(Offer::class)->where('status','pending')->where('expires_at','>',now()); }
+    public function bids(): HasMany        { return $this->hasMany(Bid::class); }
+    public function activeBids(): HasMany  { return $this->hasMany(Bid::class)->where('status','active'); }
+    public function acceptedBid(): BelongsTo { return $this->belongsTo(Bid::class, 'accepted_bid_id'); }
     public function orders(): HasMany     { return $this->hasMany(Order::class); }
     public function promotions(): HasMany { return $this->hasMany(Promotion::class); }
     public function favorites(): HasMany  { return $this->hasMany(Favorite::class); }
@@ -60,7 +67,53 @@ class Asset extends Model
     public function hasPendingEdit(): bool   { return $this->pendingEdit()->exists(); }
     public function isEditable(): bool       { return !$this->hasActiveOrder(); }
     public function isPriceLocked(): bool    { return $this->hasActiveOffer(); }
-    public function isSoldOut(): bool        { return $this->available_quantity <= 0; }
     public function isFeaturedNow(): bool    { return $this->is_featured && $this->featured_start_at?->isPast() && $this->featured_end_at?->isFuture(); }
-    public function isAvailableForPurchase(): bool { return $this->status === AssetStatus::Published && !$this->isSoldOut(); }
+
+    // Inventory
+    public function inventoryType(): InventoryType
+    {
+        return $this->inventory_type ?? InventoryType::Single;
+    }
+
+    public function isUnlimited(): bool { return $this->inventoryType() === InventoryType::Unlimited; }
+
+    /** Unlimited stock never runs out, so it can never be sold out. */
+    public function isSoldOut(): bool
+    {
+        return !$this->isUnlimited() && $this->available_quantity <= 0;
+    }
+
+    public function isAvailableForPurchase(): bool
+    {
+        return $this->status === AssetStatus::Published && !$this->isSoldOut();
+    }
+
+    /**
+     * Bidding is Single-only, and closes once a bid has been accepted.
+     * The controller/service re-check this — the UI is never the gate.
+     */
+    public function allowsBidding(): bool
+    {
+        return $this->inventoryType()->allowsBidding()
+            && $this->status === AssetStatus::Published
+            && !$this->isSoldOut();
+    }
+
+    public function hasAcceptedBid(): bool
+    {
+        return $this->accepted_bid_id !== null;
+    }
+
+    /** Highest live bid, or null when nobody has bid yet. */
+    public function topBid(): ?Bid
+    {
+        return $this->bids()->active()->topFirst()->first();
+    }
+
+    public function topBidAmount(): ?int
+    {
+        $max = $this->bids()->active()->max('amount');
+
+        return $max === null ? null : (int) $max;
+    }
 }

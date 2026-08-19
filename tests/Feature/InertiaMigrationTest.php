@@ -3585,7 +3585,17 @@ class InertiaMigrationTest extends TestCase
                 // Ownership is decided server-side, never inferred from an id on the client.
                 ->where('canManage', false)
                 ->where('manageUrl', null)
-                ->where('activeOffer', null)
+                // The old listing-level "Make an Offer" prop is gone. What a
+                // guest sees instead is bid state, all of it server-decided.
+                ->missing('activeOffer')
+                ->where('asset.inventory_type', 'single')
+                ->where('asset.allows_bidding', true)
+                ->where('asset.has_accepted_bid', false)
+                ->where('asset.top_bid_formatted', null)
+                ->where('canBid', false)
+                ->where('canContact', false)
+                ->has('bids', 0)
+                ->where('acceptedBid', null)
                 ->has('asset.images')
                 ->has('seo.canonical')
             );
@@ -4257,6 +4267,12 @@ class InertiaMigrationTest extends TestCase
                     ->has('sender_initial')
                     ->etc()
                 )
+                // Custom offers are listing-scoped, so a thread with no listing
+                // context carries no listing card and cannot start one.
+                ->where('listing', null)
+                ->has('offers', 0)
+                ->where('canOffer', false)
+                ->where('isRealtimeReady', false)
             );
     }
 

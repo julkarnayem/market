@@ -3,6 +3,8 @@ namespace App\Http\Controllers;
 
 use App\Enums\AssetStatus;
 use App\Models\Asset;
+use App\Models\Bid;
+use App\Models\User;
 use Illuminate\Support\Str;
 use App\Models\Category;
 use App\Models\CategoryAttribute;
@@ -10,6 +12,7 @@ use App\Services\ViewTrackingService;
 use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Gate;
 use Inertia\Inertia;
 
 class MarketplaceController extends Controller
@@ -213,8 +216,12 @@ class MarketplaceController extends Controller
     public function show(string $slug, Request $request, ViewTrackingService $tracker)
     {
         $asset = Asset::where('slug', $slug)
-            ->where(fn($q) => $q->published()->orWhere('status', AssetStatus::SoldOut))
-            ->with(['seller','category.attributes','coverImage','images','attributeValues.attribute'])
+            ->where(fn($q) => $q->published()
+                ->orWhere('status', AssetStatus::SoldOut)
+                // A listing held at "Bid Accepted" is still public — it has to
+                // be, so the winning bidder can come back and pay.
+                ->orWhere('status', AssetStatus::BidAccepted))
+            ->with(['seller','category.attributes','coverImage','images','attributeValues.attribute','acceptedBid.bidder'])
             ->withCount('favorites')
             ->firstOrFail();
 
@@ -234,9 +241,39 @@ class MarketplaceController extends Controller
             ? auth()->user()->favorites()->where('asset_id', $asset->id)->exists()
             : false;
 
-        $userActiveOffer = auth()->check()
-            ? $asset->offers()->where('buyer_user_id', auth()->id())->where('status', 'pending')->where('expires_at', '>', now())->first()
-            : null;
+        $viewer  = auth()->user();
+        $isOwner = $viewer !== null && (int) $viewer->id === (int) $asset->user_id;
+        $type    = $asset->inventoryType();
+
+        // Bidding exists only on single-item listings. Every flag below is
+        // computed here, on the server, from the policy and the listing state —
+        // the client is told what it may do, it never decides.
+        $biddable   = $type->allowsBidding();
+        $topBid     = $biddable ? $asset->topBid() : null;
+        $bidCount   = $biddable ? $asset->bids()->count() : 0;
+        $canBid     = $viewer !== null && Gate::forUser($viewer)->allows('create', [Bid::class, $asset]);
+        $recentBids = $biddable
+            ? $asset->bids()->with('bidder')->orderByDesc('id')->limit(10)->get()
+                ->map(fn (Bid $bid) => [
+                    'id'               => $bid->id,
+                    'amount_formatted' => Money::format((int) $bid->amount),
+                    'bidder_name'      => self::bidderLabel($bid, $viewer, $isOwner),
+                    'bidder_initial'   => mb_strtoupper(mb_substr($bid->bidder?->name ?? '?', 0, 1)),
+                    'status'           => $bid->status->value,
+                    'status_label'     => $bid->status->label(),
+                    'placed_human'     => $bid->created_at?->diffForHumans(null, true),
+                    'is_mine'          => $viewer !== null && (int) $bid->bidder_user_id === (int) $viewer->id,
+                    'is_top'           => $topBid !== null && (int) $topBid->id === (int) $bid->id,
+                    'can_accept'       => $viewer !== null && Gate::forUser($viewer)->allows('accept', $bid),
+                    'can_reject'       => $viewer !== null && Gate::forUser($viewer)->allows('reject', $bid),
+                    'can_cancel'       => $viewer !== null && Gate::forUser($viewer)->allows('cancel', $bid),
+                ])->values()->all()
+            : [];
+
+        $acceptedBid = $asset->acceptedBid;
+        $wonByViewer = $acceptedBid !== null
+            && $viewer !== null
+            && (int) $acceptedBid->bidder_user_id === (int) $viewer->id;
 
         // Build structured data (safe values only from DB)
         $structuredDataJson = json_encode([
@@ -249,7 +286,9 @@ class MarketplaceController extends Controller
                 '@type'         => 'Offer',
                 'priceCurrency' => 'BDT',
                 'price'         => number_format($asset->price / 100, 2, '.', ''),
-                'availability'  => $asset->isSoldOut()
+                // A listing whose bid was accepted is off the market even though
+                // it is not sold yet, so it must not advertise itself as in stock.
+                'availability'  => $asset->isSoldOut() || $asset->hasAcceptedBid()
                     ? 'https://schema.org/OutOfStock'
                     : 'https://schema.org/InStock',
                 'url'           => route('marketplace.show', $asset->slug),
@@ -271,6 +310,23 @@ class MarketplaceController extends Controller
                 'is_sold_out'        => $asset->isSoldOut(),
                 'is_featured'        => $asset->isFeaturedNow(),
                 'is_purchasable'     => $asset->isAvailableForPurchase(),
+                'status'             => $asset->status->value,
+                'status_label'       => $asset->status->label(),
+                // How this listing sells: one unique item, a counted stock, or
+                // unlimited copies. Only the first of the three accepts bids.
+                'inventory_type'     => $type->value,
+                'inventory_label'    => $type->label(),
+                'is_unlimited'       => $asset->isUnlimited(),
+                'allows_bidding'     => $asset->allowsBidding(),
+                'has_accepted_bid'   => $asset->hasAcceptedBid(),
+                'top_bid_formatted'  => $topBid ? Money::format((int) $topBid->amount) : null,
+                'bid_count'          => $bidCount,
+                // The only floor a new bid has to clear: one poisha over the
+                // current top bid, or any positive amount when there is none.
+                'min_bid_bdt'        => number_format(
+                    Money::toBdt($topBid ? (int) $topBid->amount + 1 : 1),
+                    2, '.', ''
+                ),
                 'views_count'        => (int) $asset->views_count,
                 'favorites_count'    => (int) $asset->favorites_count,
                 'listed_on'          => $asset->created_at?->format('d M Y'),
@@ -296,7 +352,8 @@ class MarketplaceController extends Controller
                 ],
                 // URLs resolved server-side so the client never needs the owner's id.
                 'checkout_url'       => route('checkout.show', $asset->slug),
-                'offer_url'          => route('offers.create', ['asset' => $asset->slug]),
+                'bid_url'            => route('bids.store', $asset->slug),
+                'contact_url'        => route('listings.contact', $asset->slug),
                 'attributes'         => $asset->attributeValues->map(fn ($value) => [
                     'label' => $value->attribute?->label,
                     'value' => $value->value,
@@ -311,9 +368,19 @@ class MarketplaceController extends Controller
             'manageUrl'    => auth()->check() && auth()->id() === $asset->user_id
                 ? route('dashboard.listings.show', $asset)
                 : null,
-            'activeOffer'  => $userActiveOffer ? [
-                'amount_formatted'  => Money::format((int) $userActiveOffer->amount),
-                'expires_in_seconds' => $userActiveOffer->timeRemainingSeconds(),
+            'canBid'       => $canBid,
+            'canContact'   => $viewer !== null && !$isOwner && $viewer->canTransact(),
+            'bids'         => $recentBids,
+            // Shown to both sides once a bid is accepted: who won, for how much,
+            // and — for the winner only — where to pay.
+            'acceptedBid'  => $acceptedBid ? [
+                'id'               => $acceptedBid->id,
+                'amount_formatted' => Money::format((int) $acceptedBid->amount),
+                'buyer_name'       => $acceptedBid->bidder?->name ?? 'Unknown',
+                'is_mine'          => $wonByViewer,
+                'pay_url'          => $wonByViewer
+                    ? route('checkout.show', ['slug' => $asset->slug, 'bid' => $acceptedBid->id])
+                    : null,
             ] : null,
             'seo'          => [
                 'description' => $description,
@@ -322,5 +389,38 @@ class MarketplaceController extends Controller
                 'jsonLd'      => $structuredDataJson,
             ],
         ]);
+    }
+
+    /**
+     * How a bid's owner is named in the public history.
+     *
+     * The listing's own seller sees full names — they are deciding whose bid to
+     * accept. Everyone else sees "Rahim A.", because a public bid list is not a
+     * reason to publish someone's full name next to what they can afford.
+     */
+    private static function bidderLabel(Bid $bid, ?User $viewer, bool $isOwner): string
+    {
+        if ($viewer !== null && (int) $bid->bidder_user_id === (int) $viewer->id) {
+            return 'You';
+        }
+
+        $name = trim($bid->bidder?->name ?? '');
+
+        if ($name === '') {
+            return 'Bidder';
+        }
+
+        if ($isOwner) {
+            return $name;
+        }
+
+        $parts = preg_split('/\s+/', $name) ?: [];
+        $first = $parts[0] ?? '';
+
+        if (count($parts) < 2) {
+            return $first !== '' ? $first : 'Bidder';
+        }
+
+        return $first . ' ' . mb_strtoupper(mb_substr((string) end($parts), 0, 1)) . '.';
     }
 }

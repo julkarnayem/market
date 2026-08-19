@@ -29,6 +29,16 @@ return Application::configure(basePath: dirname(__DIR__))
         // after session + CSRF, which share() depends on.
         $middleware->web(append: [HandleInertiaRequests::class]);
 
+        // Gateway return endpoints. UddoktaPay may hand the buyer back with a
+        // POST (its `return_type` default) and has no CSRF token to send, so
+        // token validation would 419 a payment that has already gone through.
+        // Safe to exempt: neither endpoint trusts its own input — the invoice is
+        // re-verified against the gateway before any order is confirmed.
+        $middleware->validateCsrfTokens(except: [
+            'checkout/callback',
+            'checkout/cancel',
+        ]);
+
         // Route aliases
         $middleware->alias([
             'active'    => EnsureUserIsActive::class,

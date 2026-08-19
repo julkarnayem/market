@@ -12,7 +12,7 @@ class Order extends Model
 {
     protected $fillable = [
         'reference','order_number',
-        'buyer_user_id','seller_user_id','asset_id','offer_id',
+        'buyer_user_id','seller_user_id','asset_id','offer_id','bid_id',
         'quantity','unit_price','subtotal',
         'seller_fee_bp','seller_fee_amount',
         'buyer_fee_enabled','buyer_fee_type','buyer_fee_bp','buyer_fee_amount',
@@ -42,9 +42,14 @@ class Order extends Model
     public function seller(): BelongsTo       { return $this->belongsTo(User::class, 'seller_user_id'); }
     public function asset(): BelongsTo        { return $this->belongsTo(Asset::class); }
     public function offer(): BelongsTo        { return $this->belongsTo(Offer::class); }
+    public function bid(): BelongsTo          { return $this->belongsTo(Bid::class); }
     public function statusHistory(): HasMany  { return $this->hasMany(OrderStatusHistory::class); }
     public function conversation(): HasOne    { return $this->hasOne(Conversation::class); }
-    public function dispute(): HasOne         { return $this->hasOne(Dispute::class); }
+    // An order can be disputed more than once over its life (a withdrawn dispute
+    // does not consume the buyer's right to raise a real one), so this resolves
+    // to the current dispute rather than an arbitrary row.
+    public function dispute(): HasOne         { return $this->hasOne(Dispute::class)->latestOfMany(); }
+    public function disputes(): HasMany       { return $this->hasMany(Dispute::class); }
     public function payments(): HasMany       { return $this->hasMany(Payment::class); }
     public function latestPayment(): HasOne   { return $this->hasOne(Payment::class)->latest(); }
     public function delivery(): HasOne        { return $this->hasOne(OrderDelivery::class); }

@@ -2,6 +2,7 @@
 namespace App\Services;
 
 use App\Enums\AssetStatus;
+use App\Enums\InventoryType;
 use App\Models\Asset;
 use App\Models\AssetEdit;
 use App\Models\AssetImage;
@@ -21,7 +22,13 @@ class ListingService
     {
         return DB::transaction(function () use ($seller, $data, $images, $isDraft) {
             $price = Money::toPoisha($data['price_bdt']);
-            $qty   = (int) $data['quantity'];
+            $type  = InventoryType::tryFrom((string) ($data['inventory_type'] ?? 'single')) ?? InventoryType::Single;
+
+            // Only a Multiple listing carries a stock figure. Single is one item
+            // by definition, and Unlimited never counts down.
+            $qty = $type === InventoryType::Multiple
+                ? max(1, (int) ($data['quantity'] ?? 1))
+                : 1;
 
             $asset = Asset::create([
                 'user_id'          => $seller->id,
@@ -30,6 +37,7 @@ class ListingService
                 'slug'             => $this->uniqueSlug($data['title']),
                 'description'      => $data['description'],
                 'price'            => $price,
+                'inventory_type'   => $type->value,
                 'quantity'         => $qty,
                 'available_quantity'=> $qty,
                 'status'           => $isDraft ? AssetStatus::Draft : AssetStatus::PendingReview,
@@ -69,7 +77,11 @@ class ListingService
                 'title'       => $data['title'],
                 'description' => $data['description'],
                 'price'       => Money::toPoisha($data['price_bdt']),
-                'quantity'    => (int)$data['quantity'],
+                // Stock is only meaningful for Multiple; the inventory type
+                // itself is fixed at creation and is never edited here.
+                'quantity'    => $asset->inventoryType() === InventoryType::Multiple
+                    ? max(1, (int) $data['quantity'])
+                    : 1,
                 'attributes'  => $data['attributes'] ?? [],
                 'edit_reason' => $data['edit_reason'] ?? null,
             ];
@@ -163,15 +175,47 @@ class ListingService
         }
     }
 
+    /**
+     * Public slug for a listing: the slugified title plus a random 8-character
+     * suffix, always — "5k-subs-youtube-sell-aedlsyre", never the bare
+     * "5k-subs-youtube-sell".
+     *
+     * The suffix is what makes two identical titles produce two different URLs
+     * without falling back to a guessable "-2" counter, and it is generated here
+     * on the server: a slug arriving from the browser is never used.
+     *
+     * Soft-deleted listings still hold their slug (the column is unique), so the
+     * collision check has to see them.
+     */
     public function uniqueSlug(string $title): string
     {
         $base = Str::slug($title);
-        $slug = $base;
-        $i    = 2;
-        while (Asset::where('slug', $slug)->exists()) {
-            $slug = $base . '-' . $i++;
+
+        if ($base === '') {
+            $base = 'listing';
         }
+
+        // Leave room for the "-xxxxxxxx" suffix inside the 255-char column.
+        $base = rtrim(Str::limit($base, 200, ''), '-');
+
+        do {
+            $slug = $base . '-' . $this->slugSuffix();
+        } while (Asset::withTrashed()->where('slug', $slug)->exists());
+
         return $slug;
+    }
+
+    /** 8 URL-safe lowercase characters. */
+    private function slugSuffix(int $length = 8): string
+    {
+        $alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+        $suffix   = '';
+
+        for ($i = 0; $i < $length; $i++) {
+            $suffix .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        }
+
+        return $suffix;
     }
 
     public function sellerEarning(int $pricePoisha): array

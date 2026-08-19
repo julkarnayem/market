@@ -3,8 +3,8 @@
 use App\Http\Controllers\Auth\{AuthenticatedSessionController,EmailVerificationController,NewPasswordController,PasswordResetLinkController,RegisteredUserController};
 use App\Http\Controllers\Admin\{DashboardController as AdminDashboard,FraudController,
 UserController as AdminUser,VerificationController as AdminVerification,ListingController as AdminListing,CategoryController as AdminCategory,WithdrawalController as AdminWithdrawal,SettingsController as AdminSettings,AuditController as AdminAudit,OfferController as AdminOffer,OrderController as AdminOrder,PaymentController as AdminPayment,DisputeController as AdminDispute,WalletController as AdminWallet,PromotionController as AdminPromotion,NotificationController as AdminNotification,TicketController as AdminTicket,StaffController,RoleController,ReportController,MessageReportController,SupportTemplateController};
-use App\Http\Controllers\Dashboard\{DashboardController,FavoriteController,ListingController,MessageController,NotificationController,OfferController,OrderController,ProfileController as DashProfile,PromotionController,ReviewController,TicketController,WalletController,WithdrawalController};
-use App\Http\Controllers\{CheckoutController,MarketplaceController,PageController,ProfileController,SeoController};
+use App\Http\Controllers\Dashboard\{CustomOfferController,DashboardController,FavoriteController,ListingController,MessageController,NotificationController,OrderController,ProfileController as DashProfile,PromotionController,ReviewController,TicketController,WalletController,WithdrawalController};
+use App\Http\Controllers\{BidController,CheckoutController,ListingContactController,MarketplaceController,PageController,ProfileController,SeoController};
 use Illuminate\Support\Facades\Route;
 
 // ── Public ─────────────────────────────────────────────────────────
@@ -40,9 +40,14 @@ Route::middleware('guest')->group(function () {
 });
 
 // ── Payment callbacks ────────────────────────────────────────────────
+// These belong to the gateway, not to the browser: UddoktaPay decides which
+// method it returns the buyer with, so the return endpoints accept both rather
+// than 405-ing on a POST. They stay unauthenticated on purpose — an expired
+// session must not stop a completed payment from being confirmed — and they
+// only ever redirect, never render. The buyer-facing page is checkout.success.
 Route::post('/checkout/webhook', [CheckoutController::class, 'webhook'])->name('checkout.callback.webhook')->withoutMiddleware(['web']);
-Route::get('/checkout/success', [CheckoutController::class, 'success'])->name('checkout.callback.success');
-Route::get('/checkout/cancel', [CheckoutController::class, 'cancel'])->name('checkout.callback.cancel');
+Route::match(['get', 'post'], '/checkout/callback', [CheckoutController::class, 'callback'])->name('checkout.callback.return');
+Route::match(['get', 'post'], '/checkout/cancel', [CheckoutController::class, 'cancel'])->name('checkout.callback.cancel');
 
 // ── Authenticated ────────────────────────────────────────────────────
 Route::middleware(['auth', 'active'])->group(function () {
@@ -53,7 +58,9 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::get('/verify-email/{id}/{hash}', [EmailVerificationController::class, 'verify'])->middleware(['signed','throttle:6,1'])->name('verification.verify');
     Route::post('/verify-email/send', [EmailVerificationController::class, 'send'])->middleware('throttle:6,1')->name('verification.send');
 
-    // Checkout
+    // Checkout. The success page is declared before /checkout/{slug} or the
+    // wildcard would swallow it and look for a listing slugged "success".
+    Route::get('/checkout/success', [CheckoutController::class, 'success'])->name('checkout.success');
     Route::get('/checkout/{slug}', [CheckoutController::class, 'show'])->name('checkout.show');
     Route::post('/checkout', [CheckoutController::class, 'initiate'])->middleware('throttle:10,1')->name('checkout.initiate');
 
@@ -61,11 +68,20 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::post('/favorites/toggle', [FavoriteController::class, 'toggle'])->middleware('throttle:30,1')->name('favorites.toggle');
     Route::delete('/favorites/{favorite}', [FavoriteController::class, 'remove'])->name('favorites.remove');
 
-    // Offers
-    Route::get('/offers/new', [OfferController::class, 'create'])->name('offers.create');
-    Route::post('/offers', [OfferController::class, 'store'])->middleware('throttle:10,1')->name('offers.store');
-    Route::post('/offers/{offer}/accept', [OfferController::class, 'accept'])->name('offers.accept');
-    Route::post('/offers/{offer}/reject', [OfferController::class, 'reject'])->name('offers.reject');
+    // Bids — single-item listings only; the policy and BidService enforce that.
+    Route::post('/listings/{asset:slug}/bids', [BidController::class, 'store'])->middleware('throttle:20,1')->name('bids.store');
+    Route::post('/bids/{bid}/accept', [BidController::class, 'accept'])->name('bids.accept');
+    Route::post('/bids/{bid}/reject', [BidController::class, 'reject'])->name('bids.reject');
+    Route::post('/bids/{bid}/cancel', [BidController::class, 'cancel'])->name('bids.cancel');
+
+    // Contact Seller — opens (or reuses) the buyer↔seller thread for a listing.
+    Route::post('/listings/{asset:slug}/contact', ListingContactController::class)->middleware('throttle:20,1')->name('listings.contact');
+
+    // Custom offers — chat-scoped. Creation lives under the conversation route
+    // below; responding is keyed on the offer itself.
+    Route::post('/offers/{offer}/accept', [CustomOfferController::class, 'accept'])->name('offers.accept');
+    Route::post('/offers/{offer}/reject', [CustomOfferController::class, 'reject'])->name('offers.reject');
+    Route::post('/offers/{offer}/cancel', [CustomOfferController::class, 'cancel'])->name('offers.cancel');
 
     // Delivery attachment
     Route::get('/orders/{order}/delivery-attachment', [OrderController::class, 'deliveryAttachment'])->name('orders.delivery.attachment');
@@ -121,12 +137,10 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::get('/promotions/buy', [PromotionController::class, 'create'])->name('.promotions.create');
         Route::post('/promotions', [PromotionController::class, 'store'])->middleware('throttle:5,1')->name('.promotions.store');
 
-        // Offers
-        Route::get('/offers', [OfferController::class, 'index'])->name('.offers');
-
         // Messages (Part 8 — enhanced)
         Route::get('/messages', [MessageController::class, 'index'])->name('.messages');
         Route::post('/messages/{conversation}/send', [MessageController::class, 'send'])->middleware('throttle:30,1')->name('.messages.send');
+        Route::post('/messages/{conversation}/offers', [CustomOfferController::class, 'store'])->middleware('throttle:10,1')->name('.messages.offers.store');
 
         // Notifications
         Route::get('/notifications', [NotificationController::class, 'index'])->name('.notifications');

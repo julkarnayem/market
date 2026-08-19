@@ -1,8 +1,11 @@
 <?php
 namespace App\Services;
 
+use App\Enums\BidStatus;
+use App\Enums\OfferStatus;
 use App\Enums\OrderStatus;
 use App\Models\Asset;
+use App\Models\Bid;
 use App\Models\Conversation;
 use App\Models\Dispute;
 use App\Models\Offer;
@@ -24,24 +27,53 @@ class OrderService
         private readonly UddoktaPayService  $gateway,
         private readonly AuditLogger        $audit,
         private readonly WalletService      $walletSvc,
+        private readonly BidService         $bids,
     ) {}
 
     /**
      * Validate purchase eligibility and calculate fees.
      * Returns the fee snapshot array (server-side, never from browser).
+     *
+     * A purchase can arrive three ways, and the unit price comes from whichever
+     * one it is — never from the request:
+     *   plain Buy Now      → the listing price
+     *   accepted offer     → the offer amount (buyer only)
+     *   accepted bid       → the bid amount (the winning bidder only)
      */
-    public function validateAndCalculate(Asset $asset, int $quantity, User $buyer, ?Offer $offer = null): array
+    public function validateAndCalculate(Asset $asset, int $quantity, User $buyer, ?Offer $offer = null, ?Bid $bid = null): array
     {
         // Self-purchase prevention
         abort_if($buyer->id === $asset->user_id, 403, 'You cannot purchase your own listing.');
         abort_unless($buyer->canTransact(), 403, 'Your account is not in good standing.');
-        abort_unless($asset->status->value === 'published', 422, 'This listing is not available for purchase.');
-        abort_if($asset->isSoldOut(), 422, 'This listing is sold out.');
-        abort_if($asset->available_quantity < $quantity, 422, "Only {$asset->available_quantity} unit(s) available.");
         abort_if($quantity < 1, 422, 'Quantity must be at least 1.');
 
-        // Use offer amount if purchasing via accepted offer
-        $unitPrice = $offer ? $offer->amount : $asset->price;
+        if ($bid) {
+            // A listing sitting at "Bid Accepted" is closed to everyone except
+            // the winning bidder, who is the one being sent here to pay.
+            abort_unless((int) $bid->bidder_user_id === $buyer->id, 403, 'This bid is not yours.');
+            abort_unless($bid->status === BidStatus::Accepted, 422, 'This bid has not been accepted.');
+            abort_unless((int) $bid->asset_id === (int) $asset->id, 422, 'This bid is for a different listing.');
+            abort_unless(
+                in_array($asset->status->value, ['published', 'bid_accepted'], true),
+                422,
+                'This listing is not available for purchase.'
+            );
+        } else {
+            abort_unless($asset->status->value === 'published', 422, 'This listing is not available for purchase.');
+        }
+
+        abort_if($asset->isSoldOut(), 422, 'This listing is sold out.');
+
+        // Unlimited stock is never short.
+        if ($asset->inventoryType()->consumesInventory()) {
+            abort_if($asset->available_quantity < $quantity, 422, "Only {$asset->available_quantity} unit(s) available.");
+        }
+
+        $unitPrice = match (true) {
+            $bid !== null   => (int) $bid->amount,
+            $offer !== null => (int) $offer->amount,
+            default         => (int) $asset->price,
+        };
 
         return $this->fees->forOrder($unitPrice, $quantity);
     }
@@ -50,11 +82,17 @@ class OrderService
      * Initiate payment: create pending order + payment, get gateway URL.
      * Order is NOT yet confirmed/paid.
      */
-    public function initiate(Asset $asset, int $quantity, User $buyer, ?Offer $offer = null): array
+    public function initiate(Asset $asset, int $quantity, User $buyer, ?Offer $offer = null, ?Bid $bid = null): array
     {
-        $feeSnap = $this->validateAndCalculate($asset, $quantity, $buyer, $offer);
+        $feeSnap = $this->validateAndCalculate($asset, $quantity, $buyer, $offer, $bid);
 
-        return DB::transaction(function () use ($asset, $quantity, $buyer, $offer, $feeSnap) {
+        return DB::transaction(function () use ($asset, $quantity, $buyer, $offer, $bid, $feeSnap) {
+            $unitPrice = match (true) {
+                $bid !== null   => (int) $bid->amount,
+                $offer !== null => (int) $offer->amount,
+                default         => (int) $asset->price,
+            };
+
             $order = Order::create([
                 'reference'          => 'REF-' . strtoupper(Str::random(12)),
                 'order_number'       => $this->generateOrderNumber(),
@@ -62,8 +100,9 @@ class OrderService
                 'seller_user_id'     => $asset->user_id,
                 'asset_id'           => $asset->id,
                 'offer_id'           => $offer?->id,
+                'bid_id'             => $bid?->id,
                 'quantity'           => $quantity,
-                'unit_price'         => $offer ? $offer->amount : $asset->price,
+                'unit_price'         => $unitPrice,
                 'subtotal'           => $feeSnap['subtotal'],
                 'seller_fee_bp'      => $feeSnap['seller_fee_bp'],
                 'seller_fee_amount'  => $feeSnap['seller_fee_amount'],
@@ -123,16 +162,39 @@ class OrderService
             // Lock the asset row and re-verify quantity
             $asset = Asset::where('id', $order->asset_id)->lockForUpdate()->firstOrFail();
 
-            abort_unless($asset->status->value === 'published', 422, 'Listing is no longer available.');
-            abort_if($asset->available_quantity < $order->quantity, 422, 'Insufficient quantity.');
+            // A listing held at "Bid Accepted" is payable only by the order that
+            // carries the winning bid — that is what took it off the market.
+            $viaAcceptedBid = $order->bid_id !== null
+                && (int) $asset->accepted_bid_id === (int) $order->bid_id;
 
-            // Atomically decrement quantity
-            $asset->decrement('available_quantity', $order->quantity);
-            $asset->increment('sold_quantity', $order->quantity);
+            abort_unless(
+                $asset->status->value === 'published' || ($viaAcceptedBid && $asset->status->value === 'bid_accepted'),
+                422,
+                'Listing is no longer available.'
+            );
 
-            // Mark sold out if depleted
-            if ($asset->available_quantity <= 0) {
-                $asset->update(['status' => 'sold_out']);
+            $consumesInventory = $asset->inventoryType()->consumesInventory();
+
+            if ($consumesInventory) {
+                abort_if($asset->available_quantity < $order->quantity, 422, 'Insufficient quantity.');
+
+                // Atomically decrement quantity
+                $asset->decrement('available_quantity', $order->quantity);
+                $asset->increment('sold_quantity', $order->quantity);
+
+                // Mark sold out if depleted
+                if ($asset->available_quantity <= 0) {
+                    $asset->update(['status' => 'sold_out']);
+                    // Nobody can pay for it now, so open bids are done with.
+                    $this->bids->expireOpenBids((int) $asset->id, $order->bid_id ? (int) $order->bid_id : null);
+                } elseif ($viaAcceptedBid) {
+                    // Stock left over on a bid sale: back on the market.
+                    $asset->update(['status' => 'published', 'accepted_bid_id' => null]);
+                }
+            } else {
+                // Unlimited stock: one listing can generate any number of orders
+                // and stays Active. Only the sold counter moves.
+                $asset->increment('sold_quantity', $order->quantity);
             }
 
             // Update order status
@@ -153,14 +215,36 @@ class OrderService
                 'paid_at'               => now(),
             ]);
 
-            // If this order came from an offer, mark offer as completed
+            // A custom offer that has been paid for is done negotiating.
             if ($order->offer_id) {
-                Offer::where('id', $order->offer_id)->update(['status' => 'cancelled']); // off market
+                Offer::where('id', $order->offer_id)->update([
+                    'status'  => OfferStatus::Paid->value,
+                    'paid_at' => now(),
+                ]);
             }
 
-            // Create private order conversation
-            $conv = Conversation::create(['type'=>'order','order_id'=>$order->id,'last_message_at'=>now()]);
-            $conv->participants()->attach([$order->buyer_user_id, $order->seller_user_id]);
+            // Private order conversation. If the pair already has a thread about
+            // this listing — they used Contact Seller — the order joins it rather
+            // than opening a second one they would have to switch between.
+            $conv = Conversation::query()
+                ->whereNull('order_id')
+                ->where('asset_id', $asset->id)
+                ->whereHas('participants', fn ($q) => $q->where('users.id', $order->buyer_user_id))
+                ->whereHas('participants', fn ($q) => $q->where('users.id', $order->seller_user_id))
+                ->orderBy('id')
+                ->first();
+
+            if ($conv) {
+                $conv->update(['order_id' => $order->id, 'last_message_at' => now()]);
+            } else {
+                $conv = Conversation::create([
+                    'type'            => 'order',
+                    'order_id'        => $order->id,
+                    'asset_id'        => $asset->id,
+                    'last_message_at' => now(),
+                ]);
+                $conv->participants()->attach([$order->buyer_user_id, $order->seller_user_id]);
+            }
 
             $this->recordHistory($order, 'pending_payment', 'delivery_pending', null, 'Payment confirmed');
             $this->audit->log('order.paid', $order, ['status'=>'pending_payment'], ['status'=>'delivery_pending']);

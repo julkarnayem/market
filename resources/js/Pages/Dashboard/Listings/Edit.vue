@@ -19,6 +19,8 @@ interface ListingData {
     title: string;
     description: string | null;
     status: string;
+    inventory_type: 'single' | 'multiple' | 'unlimited';
+    inventory_label: string;
     quantity: number;
     price_bdt: string;
     price_formatted: string;
@@ -33,6 +35,10 @@ const props = defineProps<{
 
 const isDraft = props.listing.status === 'draft';
 const isPublished = props.listing.status === 'published';
+// The inventory type is fixed at creation — it decides whether the listing can
+// take bids and whether a sale consumes stock, so it is not editable here. Only
+// a Multiple listing has a stock figure to change.
+const hasStock = props.listing.inventory_type === 'multiple';
 
 const form = useForm<{
     title: string;
@@ -170,7 +176,14 @@ function submit() {
                         </template>
                     </div>
                     <div>
-                        <label class="label">Quantity <span class="text-rose-500">*</span></label>
+                        <label class="label">Listing type</label>
+                        <p class="rounded-xl bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
+                            {{ listing.inventory_label }}
+                        </p>
+                        <p class="field-hint">Fixed when the listing was created.</p>
+                    </div>
+                    <div v-if="hasStock">
+                        <label class="label">Quantity in stock <span class="text-rose-500">*</span></label>
                         <input
                             v-model.number="form.quantity"
                             type="number"

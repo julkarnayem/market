@@ -20,7 +20,15 @@ enum OrderStatus: string
     }
     public function canBeDelivered(): bool { return in_array($this, [self::Paid, self::DeliveryPending], true); }
     public function canBeCompleted(): bool { return $this === self::Delivered; }
-    public function canOpenDispute(): bool { return $this === self::Delivered; }
+    /**
+     * A dispute is a claim about money that has already been paid, so the order
+     * must be paid and not yet settled: Paid, Awaiting Delivery or Delivered.
+     * Completed, refunded and cancelled orders are past the point of dispute,
+     * and an unpaid one has nothing held to argue over.
+     */
+    public function canOpenDispute(): bool {
+        return in_array($this, [self::Paid, self::DeliveryPending, self::Delivered], true);
+    }
     public function label(): string {
         return match($this) {
             self::PendingPayment    => 'Awaiting Payment',

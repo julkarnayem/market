@@ -53,9 +53,16 @@ class UddoktaPayService
                 'order_number'  => $order->order_number,
                 'payment_id'    => $payment->id,
             ],
-            'redirect_url'  => route('checkout.callback.success'),
+            'redirect_url'  => route('checkout.callback.return'),
             'cancel_url'    => route('checkout.callback.cancel'),
             'webhook_url'   => route('checkout.callback.webhook'),
+            // UddoktaPay defaults return_type to POST, which sends invoice_id in
+            // the request body. Asking for GET keeps the buyer's return a plain
+            // navigation with invoice_id in the query string — no re-POST on
+            // refresh, no CSRF token needed for a request we do not originate.
+            // The callback route accepts both methods regardless, so a gateway
+            // that ignores this field still lands somewhere that works.
+            'return_type'   => 'GET',
         ];
 
         try {

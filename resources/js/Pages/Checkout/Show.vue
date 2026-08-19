@@ -23,14 +23,17 @@ const props = defineProps<{
         seller_earning: string;
     };
     has_offer: boolean;
-    order: { asset_id: number; quantity: number; offer_id: number | null };
+    has_bid: boolean;
+    order: { asset_id: number; quantity: number; offer_id: number | null; bid_id: number | null };
     gateway_configured: boolean;
     buyer_protection_hours: number;
 }>();
 
 // initiate() re-validates every one of these server-side; they are posted only
 // so the gateway invoice is built from the same order the buyer just reviewed.
-const form = useForm<{ asset_id: number; quantity: number; offer_id: number | null }>({ ...props.order });
+const form = useForm<{ asset_id: number; quantity: number; offer_id: number | null; bid_id: number | null }>({
+    ...props.order,
+});
 
 function pay(): void {
     // The button is disabled without a gateway, but initiate() would happily
@@ -89,6 +92,7 @@ function pay(): void {
                             </Link>
                             <p class="text-xs text-slate-500">Sold by: {{ asset.seller_name }}</p>
                             <p v-if="has_offer" class="badge-mint mt-1 inline-flex">Offer accepted</p>
+                            <p v-else-if="has_bid" class="badge-mint mt-1 inline-flex">Winning bid</p>
                         </div>
                     </div>
 

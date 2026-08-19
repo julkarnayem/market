@@ -54,6 +54,33 @@ class WalletService
     }
 
     /**
+     * Reverse a PENDING hold without paying it out — the seller's side of a
+     * refund. The counterpart to creditPending(): the earning was credited to
+     * pending when the order was paid, so a refund has to take it back out of
+     * pending rather than debit the seller's available balance, which they may
+     * already have withdrawn from.
+     *
+     * Clamped to what is actually held, so a partial reversal followed by a full
+     * one cannot drive pending_balance negative. Returns null when there is
+     * nothing left to reverse, which makes a replayed refund a no-op.
+     */
+    public function debitPending(User $user, int $poisha, ?Model $reference = null, string $description = ''): ?WalletTransaction
+    {
+        abort_if($poisha <= 0, 422, 'Reversal amount must be positive.');
+
+        return DB::transaction(function () use ($user, $poisha, $reference, $description) {
+            $wallet = Wallet::where('user_id', $user->id)->lockForUpdate()->firstOrFail();
+
+            $safeAmount = min($poisha, $wallet->pending_balance);
+            if ($safeAmount <= 0) return null;
+
+            $wallet->decrement('pending_balance', $safeAmount);
+
+            return $this->record($wallet, TransactionType::SellerEarningReversed, -$safeAmount, $reference, $description);
+        });
+    }
+
+    /**
      * Debit AVAILABLE balance (withdrawal reserve, fee payment, etc.)
      * Throws if insufficient balance.
      */

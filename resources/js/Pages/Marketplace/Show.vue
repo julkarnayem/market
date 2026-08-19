@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { Head, Link, router, usePage } from '@inertiajs/vue3';
+import { computed, ref } from 'vue';
+import { Head, Link, router, useForm, usePage } from '@inertiajs/vue3';
 import PublicLayout from '@/Layouts/PublicLayout.vue';
 import type { AssetCardData } from '@/types';
 
@@ -15,6 +15,17 @@ interface AssetDetail {
     is_sold_out: boolean;
     is_featured: boolean;
     is_purchasable: boolean;
+    status: string;
+    status_label: string;
+    /** single | multiple | unlimited — only `single` accepts bids. */
+    inventory_type: 'single' | 'multiple' | 'unlimited';
+    inventory_label: string;
+    is_unlimited: boolean;
+    allows_bidding: boolean;
+    has_accepted_bid: boolean;
+    top_bid_formatted: string | null;
+    bid_count: number;
+    min_bid_bdt: string;
     views_count: number;
     favorites_count: number;
     listed_on: string | null;
@@ -34,8 +45,25 @@ interface AssetDetail {
         profile_url: string | null;
     };
     checkout_url: string;
-    offer_url: string;
+    bid_url: string;
+    contact_url: string;
     attributes: { label: string; value: string; unit: string | null }[];
+}
+
+/** One row of the public bid history. Every `can_*` flag is a server decision. */
+interface BidRow {
+    id: number;
+    amount_formatted: string;
+    bidder_name: string;
+    bidder_initial: string;
+    status: string;
+    status_label: string;
+    placed_human: string | null;
+    is_mine: boolean;
+    is_top: boolean;
+    can_accept: boolean;
+    can_reject: boolean;
+    can_cancel: boolean;
 }
 
 const props = defineProps<{
@@ -44,7 +72,16 @@ const props = defineProps<{
     isFavorited: boolean;
     canManage: boolean;
     manageUrl: string | null;
-    activeOffer: { amount_formatted: string; expires_in_seconds: number } | null;
+    canBid: boolean;
+    canContact: boolean;
+    bids: BidRow[];
+    acceptedBid: {
+        id: number;
+        amount_formatted: string;
+        buyer_name: string;
+        is_mine: boolean;
+        pay_url: string | null;
+    } | null;
     seo: { description: string; canonical: string; ogImage: string | null; jsonLd: string };
 }>();
 
@@ -57,24 +94,34 @@ const hasImages = computed(() => props.asset.images.length > 0);
 const next = () => (active.value = (active.value + 1) % props.asset.images.length);
 const prev = () => (active.value = (active.value - 1 + props.asset.images.length) % props.asset.images.length);
 
-// ── Offer countdown ──
-const secs = ref(props.activeOffer?.expires_in_seconds ?? 0);
-let timer: ReturnType<typeof setInterval> | undefined;
-onMounted(() => {
-    if (props.activeOffer) {
-        timer = setInterval(() => {
-            if (secs.value > 0) secs.value--;
-        }, 1000);
-    }
-});
-onBeforeUnmount(() => clearInterval(timer));
+// ── Bidding ──
+// The panel is only rendered for single-item listings, and the server rejects a
+// bid on anything else regardless of what the page shows.
+const bidsOpen = ref(false);
+const bidForm = useForm({ amount_bdt: props.asset.min_bid_bdt });
 
-const countdown = computed(() => {
-    const h = Math.floor(secs.value / 3600);
-    const m = Math.floor((secs.value % 3600) / 60);
-    const s = secs.value % 60;
-    return [h, m, s].map((n) => String(n).padStart(2, '0')).join(':');
-});
+function submitBid() {
+    bidForm.post(props.asset.bid_url, {
+        preserveScroll: true,
+        onSuccess: () => {
+            bidsOpen.value = false;
+            // The floor has moved — reset the field to the new minimum.
+            bidForm.amount_bdt = props.asset.min_bid_bdt;
+        },
+    });
+}
+
+const busy = ref(false);
+function act(url: string) {
+    if (busy.value) return;
+    busy.value = true;
+    router.post(url, {}, { preserveScroll: true, onFinish: () => (busy.value = false) });
+}
+
+const contactSeller = () => act(props.asset.contact_url);
+const acceptBid = (id: number) => act(route('bids.accept', id));
+const rejectBid = (id: number) => act(route('bids.reject', id));
+const cancelBid = (id: number) => act(route('bids.cancel', id));
 
 // ── Favourite ──
 const favorited = ref(props.isFavorited);
@@ -98,6 +145,13 @@ async function toggleFavorite() {
 const categoryHref = computed(() =>
     route('marketplace.index', { category: props.asset.category.parent?.slug ?? props.asset.category.slug ?? undefined }),
 );
+
+/** Stock line under the price, which reads differently per inventory type. */
+const stockLine = computed(() => {
+    if (props.asset.is_unlimited) return 'Unlimited stock';
+    if (props.asset.inventory_type === 'single') return 'One unique item';
+    return `${props.asset.available_quantity} of ${props.asset.quantity} available`;
+});
 </script>
 
 <template>
@@ -163,6 +217,7 @@ const categoryHref = computed(() =>
                             <div class="absolute left-3 top-3 flex flex-wrap gap-2">
                                 <span v-if="asset.is_featured" class="badge-amber">⭐ Featured</span>
                                 <span v-if="asset.is_sold_out" class="badge-slate">⊘ Sold Out</span>
+                                <span v-else-if="asset.has_accepted_bid" class="badge-amber">🔒 Bid Accepted</span>
                                 <span v-if="asset.seller.is_verified_seller" class="badge-mint">✓ Verified Seller</span>
                             </div>
                         </div>
@@ -203,6 +258,51 @@ const categoryHref = computed(() =>
                         </dl>
                     </div>
 
+                    <!-- Recent bids — public history, single-item listings only.
+                         This is not chat: custom offers never appear here. -->
+                    <div v-if="asset.inventory_type === 'single'" class="card-p">
+                        <div class="mb-3 flex items-center justify-between">
+                            <h2 class="font-display text-lg font-bold text-slate-900">Recent Bids</h2>
+                            <span class="text-xs text-slate-500">{{ asset.bid_count }} total</span>
+                        </div>
+
+                        <p v-if="!bids.length" class="text-sm text-slate-500">
+                            No bids yet. Be the first to place one.
+                        </p>
+
+                        <ul v-else class="flex flex-col divide-y divide-slate-100">
+                            <li v-for="bid in bids" :key="bid.id" class="flex flex-wrap items-center gap-3 py-3">
+                                <span class="grid h-9 w-9 flex-shrink-0 place-items-center rounded-xl bg-slate-100 text-sm font-bold text-slate-600">
+                                    {{ bid.bidder_initial }}
+                                </span>
+                                <div class="min-w-0 flex-1">
+                                    <p class="truncate text-sm font-semibold text-slate-900">
+                                        {{ bid.bidder_name }}
+                                        <span v-if="bid.is_top && bid.status === 'active'" class="badge-mint ms-1">Top bid</span>
+                                    </p>
+                                    <p class="text-xs text-slate-500">
+                                        {{ bid.placed_human }} ago · {{ bid.status_label }}
+                                    </p>
+                                </div>
+                                <span
+                                    class="money text-sm font-bold"
+                                    :class="bid.status === 'active' ? 'text-brand-600' : 'text-slate-400 line-through'"
+                                >{{ bid.amount_formatted }}</span>
+                                <div v-if="bid.can_accept || bid.can_reject || bid.can_cancel" class="flex w-full gap-2 sm:w-auto">
+                                    <button v-if="bid.can_accept" type="button" class="btn-primary btn-sm" :disabled="busy" @click="acceptBid(bid.id)">
+                                        Accept
+                                    </button>
+                                    <button v-if="bid.can_reject" type="button" class="btn-outline btn-sm" :disabled="busy" @click="rejectBid(bid.id)">
+                                        Reject
+                                    </button>
+                                    <button v-if="bid.can_cancel" type="button" class="btn-ghost btn-sm" :disabled="busy" @click="cancelBid(bid.id)">
+                                        Withdraw
+                                    </button>
+                                </div>
+                            </li>
+                        </ul>
+                    </div>
+
                     <!-- Seller -->
                     <div class="card-p">
                         <h2 class="mb-3 font-display text-lg font-bold text-slate-900">Seller</h2>
@@ -221,13 +321,18 @@ const categoryHref = computed(() =>
                                 <p class="mt-1 text-xs text-slate-500">Member since {{ asset.seller.member_since }}</p>
                                 <p v-if="asset.seller.bio" class="mt-1 text-sm text-slate-500">{{ asset.seller.bio }}</p>
                             </div>
-                            <Link
-                                v-if="asset.seller.profile_url"
-                                :href="asset.seller.profile_url"
-                                class="btn-outline btn-sm ms-auto flex-shrink-0"
-                            >
-                                View profile
-                            </Link>
+                            <div class="ms-auto flex flex-shrink-0 flex-col gap-2">
+                                <button v-if="canContact" type="button" class="btn-outline btn-sm" :disabled="busy" @click="contactSeller">
+                                    Contact Seller
+                                </button>
+                                <Link
+                                    v-if="asset.seller.profile_url"
+                                    :href="asset.seller.profile_url"
+                                    class="btn-ghost btn-sm"
+                                >
+                                    View profile
+                                </Link>
+                            </div>
                         </div>
                     </div>
 
@@ -284,12 +389,30 @@ const categoryHref = computed(() =>
                 <aside class="mt-6 lg:mt-0">
                     <div class="card-p sticky top-20 flex flex-col gap-4">
                         <div>
-                            <p class="mb-1 text-xs text-slate-500">Price</p>
+                            <p class="mb-1 text-xs text-slate-500">Asking Price</p>
                             <span class="money block text-3xl font-bold text-slate-900">{{ asset.price_formatted }}</span>
-                            <p v-if="asset.quantity > 1" class="mt-1 text-xs text-slate-500">
+                            <p class="mt-1 text-xs text-slate-500">
                                 <span v-if="asset.is_sold_out" class="font-medium text-rose-600">Sold out</span>
-                                <template v-else>{{ asset.available_quantity }} of {{ asset.quantity }} available</template>
+                                <template v-else>{{ stockLine }}</template>
                             </p>
+                        </div>
+
+                        <!-- Current top bid — single-item listings only -->
+                        <div v-if="asset.inventory_type === 'single' && asset.top_bid_formatted" class="rounded-xl bg-brand-50 px-3 py-2">
+                            <p class="text-xs text-brand-700">Current Top Bid</p>
+                            <span class="money block text-xl font-bold text-brand-800">{{ asset.top_bid_formatted }}</span>
+                        </div>
+
+                        <!-- Bid accepted: off the market, but not sold until it is paid for -->
+                        <div v-if="acceptedBid" class="rounded-xl bg-amber-50 p-3 text-sm">
+                            <p class="font-semibold text-amber-800">Bid Accepted — awaiting payment</p>
+                            <p class="mt-1 text-amber-700">
+                                {{ acceptedBid.amount_formatted }} ·
+                                {{ acceptedBid.is_mine ? 'You won this bid' : acceptedBid.buyer_name }}
+                            </p>
+                            <Link v-if="acceptedBid.pay_url" :href="acceptedBid.pay_url" class="btn-primary btn-sm mt-2 w-full">
+                                Pay Now — {{ acceptedBid.amount_formatted }} →
+                            </Link>
                         </div>
 
                         <div class="flex items-center gap-2 rounded-xl bg-mint-50 px-3 py-2 text-xs text-mint-800">
@@ -303,19 +426,63 @@ const categoryHref = computed(() =>
                                     Manage listing →
                                 </Link>
                             </div>
-                            <button v-else-if="asset.is_sold_out" type="button" disabled class="btn-outline w-full">Sold Out</button>
-                            <button v-else-if="!asset.is_purchasable" type="button" disabled class="btn-outline w-full">Not available</button>
                             <template v-else>
-                                <Link :href="asset.checkout_url" class="btn-primary w-full">
+                                <!-- Buy Now: available on all three inventory types, and
+                                     disabled once a bid has been accepted. -->
+                                <button v-if="asset.is_sold_out" type="button" disabled class="btn-outline w-full">Sold Out</button>
+                                <button v-else-if="asset.has_accepted_bid" type="button" disabled class="btn-outline w-full">
+                                    Buy Now unavailable — bid accepted
+                                </button>
+                                <button v-else-if="!asset.is_purchasable" type="button" disabled class="btn-outline w-full">Not available</button>
+                                <Link v-else :href="asset.checkout_url" class="btn-primary w-full">
                                     Buy Now — {{ asset.price_formatted }} →
                                 </Link>
 
-                                <div v-if="activeOffer" class="rounded-xl bg-amber-50 p-3 text-sm">
-                                    <p class="font-semibold text-amber-800">Your offer is pending</p>
-                                    <p class="mt-1 text-amber-700">Amount: {{ activeOffer.amount_formatted }}</p>
-                                    <p class="money mt-1 text-xs text-amber-700">Expires in: {{ countdown }}</p>
-                                </div>
-                                <Link v-else :href="asset.offer_url" class="btn-outline w-full">Make an offer</Link>
+                                <!-- New Bid: single-item listings only. Multiple and
+                                     Unlimited never render it, and the server refuses
+                                     a bid on them even if this markup is bypassed. -->
+                                <template v-if="asset.inventory_type === 'single'">
+                                    <button
+                                        v-if="asset.has_accepted_bid"
+                                        type="button"
+                                        disabled
+                                        class="btn-outline w-full"
+                                    >Bidding closed — bid accepted</button>
+                                    <template v-else-if="canBid">
+                                        <button v-if="!bidsOpen" type="button" class="btn-outline w-full" @click="bidsOpen = true">
+                                            New Bid
+                                        </button>
+                                        <form v-else class="flex flex-col gap-2 rounded-xl bg-slate-50 p-3" @submit.prevent="submitBid">
+                                            <label :for="`bid-amount-${asset.id}`" class="text-xs font-medium text-slate-600">
+                                                Your bid (৳) — must be above
+                                                {{ asset.top_bid_formatted ?? asset.price_formatted }}
+                                                <span v-if="!asset.top_bid_formatted" class="text-slate-400">is the asking price; any amount is allowed</span>
+                                            </label>
+                                            <input
+                                                :id="`bid-amount-${asset.id}`"
+                                                v-model="bidForm.amount_bdt"
+                                                type="number"
+                                                step="0.01"
+                                                :min="asset.min_bid_bdt"
+                                                class="input"
+                                                required
+                                            />
+                                            <p v-if="bidForm.errors.amount_bdt" class="text-xs text-rose-600">{{ bidForm.errors.amount_bdt }}</p>
+                                            <div class="flex gap-2">
+                                                <button type="submit" class="btn-primary btn-sm flex-1" :disabled="bidForm.processing">
+                                                    {{ bidForm.processing ? 'Placing…' : 'Place bid' }}
+                                                </button>
+                                                <button type="button" class="btn-ghost btn-sm" @click="bidsOpen = false">Cancel</button>
+                                            </div>
+                                        </form>
+                                    </template>
+                                    <button v-else type="button" disabled class="btn-outline w-full">Bidding unavailable</button>
+                                </template>
+
+                                <!-- Contact Seller — opens the buyer↔seller chat -->
+                                <button v-if="canContact" type="button" class="btn-outline w-full" :disabled="busy" @click="contactSeller">
+                                    Contact Seller
+                                </button>
                             </template>
 
                             <button type="button" class="btn-ghost w-full" :disabled="savingFavorite" :aria-pressed="favorited" @click="toggleFavorite">
@@ -324,12 +491,14 @@ const categoryHref = computed(() =>
                         </template>
                         <template v-else>
                             <Link :href="route('login')" class="btn-primary w-full">Log in to buy</Link>
-                            <Link :href="route('login')" class="btn-outline w-full">Log in to make offer</Link>
+                            <Link v-if="asset.inventory_type === 'single'" :href="route('login')" class="btn-outline w-full">Log in to bid</Link>
+                            <Link :href="route('login')" class="btn-outline w-full">Log in to contact seller</Link>
                             <Link :href="route('login')" class="btn-ghost w-full">☆ Save to favorites</Link>
                         </template>
 
                         <dl class="flex flex-col gap-1 border-t border-slate-200 pt-3 text-xs text-slate-500">
                             <div class="flex justify-between"><dt>Category</dt><dd>{{ asset.category.name }}</dd></div>
+                            <div class="flex justify-between"><dt>Listing type</dt><dd>{{ asset.inventory_label }}</dd></div>
                             <div class="flex justify-between"><dt>Listed</dt><dd>{{ asset.listed_on }}</dd></div>
                             <div class="flex justify-between"><dt>Views</dt><dd>{{ asset.views_count.toLocaleString() }}</dd></div>
                             <div class="flex justify-between"><dt>Saved by</dt><dd>{{ asset.favorites_count.toLocaleString() }}</dd></div>

@@ -2,6 +2,7 @@
 namespace App\Http\Controllers\Dashboard;
 
 use App\Enums\AssetStatus;
+use App\Enums\InventoryType;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Dashboard\StoreListingRequest;
 use App\Http\Requests\Dashboard\UpdateListingRequest;
@@ -173,6 +174,8 @@ class ListingController extends Controller
                 'title'           => $listing->title,
                 'description'     => $listing->description,
                 'status'          => $listing->status->value,
+                'inventory_type'  => $listing->inventoryType()->value,
+                'inventory_label' => $listing->inventoryType()->label(),
                 'quantity'        => $listing->quantity,
                 'price_bdt'       => (string) Money::toBdt($listing->price),
                 'price_formatted' => Money::format($listing->price),
@@ -185,13 +188,19 @@ class ListingController extends Controller
     public function update(UpdateListingRequest $request, Asset $listing)
     {
         if ($listing->status === AssetStatus::Draft) {
-            // Direct update — still draft
+            // Direct update — still draft. Quantity is only meaningful for a
+            // Multiple listing; a posted qty must not be able to give a Single
+            // item a stock of 5, or an Unlimited one a ceiling.
+            $quantity = $listing->inventoryType() === InventoryType::Multiple
+                ? max(1, (int) $request->quantity)
+                : 1;
+
             $listing->update([
                 'title'       => $request->title,
                 'description' => $request->description,
                 'price'       => Money::toPoisha($request->price_bdt),
-                'quantity'    => $request->quantity,
-                'available_quantity' => $request->quantity,
+                'quantity'    => $quantity,
+                'available_quantity' => $quantity,
             ]);
             $this->listings->syncAttributes($listing, $request->input('attributes',[]));
             return redirect()->route('dashboard.listings.show', $listing)->with('success','Draft updated.');

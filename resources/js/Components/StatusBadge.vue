@@ -31,6 +31,9 @@ const MAP: Record<string, Entry> = {
     pending_edit_approval: ['amber', 'Edit Pending', '◐'],
     paused: ['slate', 'Paused', '❙❙'],
     sold_out: ['slate', 'Sold Out', '⊘'],
+    // A listing whose bid was accepted is off the market but *not* sold — it is
+    // waiting for the winning bidder to pay.
+    bid_accepted: ['amber', 'Bid Accepted', '🔒'],
     archived: ['slate', 'Archived', '▣'],
     // Order status
     pending_payment: ['amber', 'Awaiting Payment', '◐'],
@@ -51,9 +54,11 @@ const MAP: Record<string, Entry> = {
     auto_confirmed: ['mint', 'Auto-confirmed', '✓'],
     // Withdrawal
     processing: ['brand', 'Processing', '⟳'],
-    // Offer
+    // Offer / Bid (both share accepted/rejected/cancelled/expired; a bid's
+    // "active" reuses the User entry above, which reads the same)
     accepted: ['mint', 'Accepted', '✓'],
     expired: ['slate', 'Expired', '○'],
+    outbid: ['slate', 'Outbid', '↓'],
     // Ticket
     open: ['brand', 'Open', '●'],
     in_progress: ['amber', 'In Progress', '◐'],

@@ -5,6 +5,7 @@ enum TransactionType: string
 {
     case SellerEarningPending  = 'seller_earning_pending';   // pending hold after order
     case SellerEarningReleased = 'seller_earning_released';  // pending → available
+    case SellerEarningReversed = 'seller_earning_reversed';  // pending → gone (refunded to buyer)
     case BuyerPurchase         = 'buyer_purchase';
     case BuyerFee              = 'buyer_fee';
     case SellerPlatformFee     = 'seller_platform_fee';
@@ -27,7 +28,7 @@ enum TransactionType: string
 
     public function isDebit(): bool {
         return in_array($this, [
-            self::PromotionPurchase, self::WithdrawalReserve,
+            self::PromotionPurchase, self::WithdrawalReserve, self::SellerEarningReversed,
             self::Purchase, self::Fee, self::Hold, self::Withdrawal,
         ]);
     }
