@@ -26,20 +26,27 @@ class DisputePolicy
     }
 
     /**
-     * Parties may write while the dispute is live; staff may annotate one that
-     * has already been settled.
+     * Party speech. Staff are deliberately excluded: an admin communicates through
+     * DisputeService::announce() or an internal note, never as a peer in the
+     * buyer↔seller thread — postMessage() enforces the same rule.
      */
     public function message(User $user, Dispute $dispute): bool
     {
-        $role = $dispute->roleOf($user);
-
-        return $role === 'admin' || ($role !== null && $dispute->isActive());
+        return $dispute->isParty($user) && $dispute->isActive();
     }
 
-    /** Evidence follows the same rule as a message — it *is* a message. */
+    /**
+     * Evidence is a record, not speech, so it follows attachEvidence()'s rule
+     * rather than message()'s: staff may attach to a dispute they are reviewing,
+     * including one already settled.
+     */
     public function addEvidence(User $user, Dispute $dispute): bool
     {
-        return $this->message($user, $dispute);
+        if ($dispute->isStaff($user)) {
+            return true;
+        }
+
+        return $dispute->isParty($user) && $dispute->isActive();
     }
 
     /** Either party, once, while the dispute is still live. */
@@ -78,13 +85,15 @@ class DisputePolicy
     }
 
     /**
-     * The buyer can drop the claim they raised; an admin can close a dead one.
+     * The buyer can drop the claim they raised; staff can close a dead one.
      * A seller cannot close a dispute filed against them.
      */
     public function cancel(User $user, Dispute $dispute): bool
     {
-        $role = $dispute->roleOf($user);
+        if (!$dispute->isActive()) {
+            return false;
+        }
 
-        return $dispute->isActive() && in_array($role, ['buyer', 'admin'], true);
+        return $dispute->isStaff($user) || $dispute->roleOf($user) === 'buyer';
     }
 }

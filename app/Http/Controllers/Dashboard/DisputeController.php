@@ -131,6 +131,10 @@ class DisputeController extends Controller
                     'at'         => $r->created_at?->format('d M, H:i'),
                 ])->all(),
             'options' => DisputeResolutionType::negotiableOptions(),
+            // Same contract as the order chat (Dashboard\MessageController): when
+            // no broadcast driver is configured the page polls for new thread rows
+            // instead. Wiring a driver turns the polling off without a code change.
+            'isRealtimeReady' => !in_array((string) config('broadcasting.default'), ['', 'null'], true),
             'can'     => [
                 'message'  => $user->can('message', $dispute),
                 'evidence' => $user->can('addEvidence', $dispute),

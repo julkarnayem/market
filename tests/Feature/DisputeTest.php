@@ -12,12 +12,14 @@ use App\Models\Order;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\Wallet;
+use App\Policies\DisputePolicy;
 use App\Services\DisputeService;
 use App\Support\Money;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Concerns\BuildsMarketplace;
 use Tests\TestCase;
 
@@ -112,6 +114,59 @@ class DisputeTest extends TestCase
         $user->roles()->attach($role->id);
 
         return $user;
+    }
+
+    /**
+     * Holds the seeded `admin` role, which Gate::before grants everything —
+     * needed for the actions that authorize `disputes.manage` rather than only
+     * passing the admin middleware.
+     */
+    private function makeSuperAdmin(): User
+    {
+        $user = User::factory()->create();
+        $user->roles()->attach(Role::where('name', 'admin')->value('id'));
+
+        return $user;
+    }
+
+    /**
+     * A user holding one of the *seeded* staff roles.
+     *
+     * makeSuperAdmin() attaches the role literally named `admin`, which
+     * Gate::before blanket-allows — so it cannot tell whether an action is
+     * authorized on its own merits. `super_admin` and `support` do not trigger
+     * Gate::before, which is what the real deployment looks like.
+     */
+    private function asRole(string $roleName): User
+    {
+        $user = User::factory()->create();
+        $id   = Role::where('name', $roleName)->value('id');
+        $this->assertNotNull($id, "the {$roleName} role is not seeded");
+        $user->roles()->attach($id);
+
+        return $user->fresh();
+    }
+
+    /**
+     * The headers Inertia sends for the partial reload the page polls with.
+     *
+     * The version has to match what the middleware will compute for this request —
+     * Inertia answers a stale asset version with a 409 telling the browser to
+     * hard-reload rather than with the JSON payload. Asking the middleware itself
+     * keeps this correct whether or not a Vite manifest has been built, which
+     * matters because CI runs the suite without one.
+     */
+    private function partialReload(Dispute $dispute, array $only): \Illuminate\Testing\TestResponse
+    {
+        $version = (string) (new \App\Http\Middleware\HandleInertiaRequests())
+            ->version(request());
+
+        return $this->get("/dashboard/disputes/{$dispute->id}", [
+            'X-Inertia'                   => 'true',
+            'X-Inertia-Version'           => $version,
+            'X-Inertia-Partial-Component' => 'Dashboard/Disputes/Show',
+            'X-Inertia-Partial-Data'      => implode(',', $only),
+        ]);
     }
 
     private function balances(User $user): array
@@ -949,5 +1004,591 @@ class DisputeTest extends TestCase
 
         $this->assertSame(2, Dispute::count());
         $this->assertSame(DisputeStatus::Open, $order->fresh()->dispute->status);
+    }
+
+    // ── Legacy data and status casting ───────────────────────────────
+
+    /**
+     * The rebuild migration is the only thing standing between a legacy row and an
+     * enum error, so its mapping must be total: every status the OLD enum could
+     * store has to land on a case the NEW one defines.
+     *
+     * `waiting_for_seller` is the value that surfaced in the browser as
+     * "not a valid backing value for enum App\Enums\DisputeStatus" — it is an
+     * obsolete state, not a gap in the new lifecycle, and maps onto Open because
+     * the new flow tracks the seller's reply separately via SellerResponded.
+     */
+    public function test_every_legacy_status_maps_onto_a_valid_new_status(): void
+    {
+        $migration = require database_path('migrations/2026_08_19_110000_rebuild_dispute_system.php');
+        $constants = (new \ReflectionClass($migration))->getConstants();
+
+        $statusMap   = $constants['STATUS_MAP'];
+        $resolvedMap = $constants['RESOLVED_MAP'];
+
+        // Every case the old enum defined, from its final revision on main.
+        $legacy = ['open', 'under_review', 'waiting_for_buyer', 'waiting_for_seller',
+                   'resolved', 'rejected', 'closed'];
+
+        foreach ($legacy as $old) {
+            // 'resolved' is deliberately absent from STATUS_MAP: the outcome it
+            // stood for is recorded on resolution_type, so it maps through there.
+            $covered = $old === 'resolved'
+                ? $resolvedMap !== []
+                : array_key_exists($old, $statusMap);
+
+            $this->assertTrue($covered, "Legacy status '{$old}' has no mapping — a row holding it would break the enum cast.");
+        }
+
+        foreach (array_merge(array_values($statusMap), array_values($resolvedMap)) as $target) {
+            $this->assertNotNull(
+                DisputeStatus::tryFrom($target),
+                "Legacy mapping points at '{$target}', which is not a DisputeStatus case.",
+            );
+        }
+
+        // The specific value that broke the browser.
+        $this->assertSame(DisputeStatus::Open->value, $statusMap['waiting_for_seller']);
+    }
+
+    public function test_every_status_round_trips_through_the_model_cast(): void
+    {
+        $dispute = $this->disputedOrder();
+
+        foreach (DisputeStatus::cases() as $case) {
+            $dispute->update(['status' => $case]);
+
+            $fresh = $dispute->fresh();
+            $this->assertInstanceOf(DisputeStatus::class, $fresh->status);
+            $this->assertSame($case, $fresh->status);
+            // label() is exhaustive over the enum, so a missing arm throws here.
+            $this->assertNotSame('', $fresh->status->label());
+        }
+    }
+
+    // ── The pages that were erroring ─────────────────────────────────
+
+    /**
+     * GET /dashboard/orders/{order} is where the enum error surfaced: show() reads
+     * $order->dispute->status->value for the banner that links to the thread.
+     */
+    public function test_the_order_page_loads_for_an_order_under_dispute(): void
+    {
+        $dispute = $this->disputedOrder();
+        $order   = $dispute->order;
+
+        $this->actingAs($order->buyer)
+            ->get("/dashboard/orders/{$order->id}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Orders/Show')
+                ->where('dispute.reference', $dispute->displayReference())
+                ->where('dispute.status', 'open')
+                ->where('dispute.is_active', true)
+                ->etc()
+            );
+
+        // The seller's view of the same order renders too.
+        $this->actingAs($order->seller)
+            ->get("/dashboard/orders/{$order->id}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('dispute.status', 'open')
+                ->etc()
+            );
+    }
+
+    public function test_the_order_page_still_loads_when_there_is_no_dispute(): void
+    {
+        $order = $this->paidOrder();
+
+        $this->actingAs($order->buyer)
+            ->get("/dashboard/orders/{$order->id}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('dispute', null)->etc());
+    }
+
+    /**
+     * The admin queue orders on last_activity_at — the column whose absence
+     * produced "Unknown column 'last_activity_at' in 'order clause'". A dispute
+     * waiting on staff must not sink below one merely opened later.
+     */
+    public function test_the_admin_queue_orders_by_latest_activity(): void
+    {
+        $stale  = $this->disputedOrder();
+        $middle = $this->disputedOrder();
+        $active = $this->disputedOrder();
+
+        // Opened in ascending id order; activity deliberately the reverse.
+        $stale->update(['last_activity_at' => now()->subDays(5)]);
+        $middle->update(['last_activity_at' => now()->subDay()]);
+        $active->update(['last_activity_at' => now()]);
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/disputes?status=open')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Disputes/Index')
+                ->has('disputes.data', 3)
+                ->where('disputes.data.0.reference', $active->displayReference())
+                ->where('disputes.data.1.reference', $middle->displayReference())
+                ->where('disputes.data.2.reference', $stale->displayReference())
+            );
+    }
+
+    public function test_posting_to_the_thread_moves_a_dispute_up_the_queue(): void
+    {
+        $first  = $this->disputedOrder();
+        $second = $this->disputedOrder();
+
+        $first->update(['last_activity_at' => now()->subDays(3)]);
+        $second->update(['last_activity_at' => now()->subDay()]);
+
+        // The older dispute gets a reply, so it should overtake.
+        $this->actingAs($first->order->seller)
+            ->post("/dashboard/disputes/{$first->id}/messages", ['body' => 'Looking into this now.'])
+            ->assertRedirect();
+
+        $this->actingAs($this->makeAdmin())
+            ->get('/admin/disputes?status=all')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('disputes.data.0.reference', $first->displayReference())
+                ->etc()
+            );
+
+        $this->assertTrue($first->fresh()->last_activity_at->gt($second->fresh()->last_activity_at));
+    }
+
+    // ── Staff are not participants in the party thread ───────────────
+
+    /**
+     * An admin communicates on the record, not as a peer. Their notice is a System
+     * row — isFromParticipant() is false — so the Vue pages can render it as an
+     * administrative notice and it never reads as a third voice in the chat.
+     */
+    public function test_an_admin_notice_is_not_participant_chat(): void
+    {
+        $dispute = $this->disputedOrder();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->post("/admin/disputes/{$dispute->id}/message", ['body' => 'Both sides please upload your handover logs.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $notice = $dispute->messages()->where('role', 'admin')->latest('id')->firstOrFail();
+        $this->assertSame(DisputeMessageType::System, $notice->type);
+        $this->assertFalse($notice->type->isFromParticipant());
+        $this->assertFalse((bool) $notice->is_internal);   // both parties can read it
+        $this->assertTrue($notice->isSystem());
+
+        // No Text row was written on the admin's behalf.
+        $this->assertSame(0, $dispute->messages()
+            ->where('type', DisputeMessageType::Text->value)->count());
+
+        // The parties see it, marked as a system event rather than someone's reply.
+        $this->actingAs($dispute->order->buyer)
+            ->get("/dashboard/disputes/{$dispute->id}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('thread.1.is_system', true)
+                ->where('thread.1.is_mine', false)
+                ->etc()
+            );
+    }
+
+    public function test_an_admin_cannot_speak_as_a_party_in_the_thread(): void
+    {
+        $dispute = $this->disputedOrder();
+        $admin   = $this->makeSuperAdmin();
+
+        // The service is the last line: a Text row from staff is refused outright.
+        $this->expectException(HttpException::class);
+        try {
+            app(DisputeService::class)->postMessage($dispute, $admin, 'Just chiming in as a peer.');
+        } finally {
+            $this->assertSame(0, $dispute->messages()
+                ->where('type', DisputeMessageType::Text->value)->count());
+        }
+    }
+
+    public function test_the_dashboard_thread_never_offers_an_admin_the_composer(): void
+    {
+        $dispute = $this->disputedOrder();
+        $admin   = $this->makeSuperAdmin();
+
+        // Gate::before grants an admin everything, so the policy is asserted
+        // directly rather than through the page's `can` flags.
+        $this->assertFalse((new DisputePolicy())->message($admin, $dispute));
+        // Evidence is a record rather than speech, so that stays open to staff.
+        $this->assertTrue((new DisputePolicy())->addEvidence($admin, $dispute));
+        // And the parties keep their composer.
+        $this->assertTrue((new DisputePolicy())->message($dispute->order->buyer, $dispute));
+        $this->assertTrue((new DisputePolicy())->message($dispute->order->seller, $dispute));
+    }
+
+    /**
+     * Admin decisions stay separate from party speech: deciding writes an
+     * AdminDecision row, which is not participant chat either.
+     */
+    public function test_an_admin_decision_is_recorded_apart_from_party_messages(): void
+    {
+        $dispute = $this->disputedOrder();
+        $buyer   = $dispute->order->buyer;
+
+        $this->actingAs($buyer)
+            ->post("/dashboard/disputes/{$dispute->id}/messages", ['body' => 'Still broken, please refund.'])
+            ->assertRedirect();
+
+        $this->actingAs($this->makeSuperAdmin())
+            ->post("/admin/disputes/{$dispute->id}/full-refund", ['note' => 'Buyer evidence is conclusive.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->assertSame(DisputeStatus::ResolvedBuyer, $dispute->fresh()->status);
+
+        // One party message; the decision is its own kind of row.
+        $this->assertSame(1, $dispute->messages()->where('type', DisputeMessageType::Text->value)->count());
+        $decision = $dispute->messages()->where('type', DisputeMessageType::AdminDecision->value)->firstOrFail();
+        $this->assertFalse($decision->type->isFromParticipant());
+        $this->assertSame('admin', $decision->role);
+    }
+
+    // ── Staff identity vs. the seat they occupy ──────────────────────
+
+    /**
+     * The bug behind "Access Denied": Dispute::roleOf() resolves a party before
+     * staff, so a staff member who is also the buyer came back 'buyer' and every
+     * guard written as `roleOf() === 'admin'` refused them — on their own dispute,
+     * with the disputes.manage permission in hand.
+     *
+     * A single-operator or staging deployment routinely has exactly this shape.
+     */
+    public function test_staff_who_are_also_the_buyer_can_still_act_as_staff(): void
+    {
+        $dispute = $this->disputedOrder();
+        $buyer   = $dispute->order->buyer;
+
+        // The buyer is promoted to super_admin — the real deployment's setup.
+        $buyer->roles()->attach(Role::where('name', 'super_admin')->value('id'));
+        $buyer = $buyer->fresh();
+
+        // Their seat in the thread is still 'buyer' — that part was never wrong.
+        $this->assertSame('buyer', $dispute->roleOf($buyer));
+        // …but they hold the staff capability, which is a separate question.
+        $this->assertTrue($dispute->isStaff($buyer));
+
+        // The three actions that used to 403.
+        $this->actingAs($buyer)
+            ->post("/admin/disputes/{$dispute->id}/message", ['body' => 'Staff notice while also the buyer.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->actingAs($buyer)
+            ->post("/admin/disputes/{$dispute->id}/internal-note", ['body' => 'Internal note from staff-buyer.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->actingAs($buyer)
+            ->post("/admin/disputes/{$dispute->id}/release-seller", ['note' => 'Claim not substantiated.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->assertSame(DisputeStatus::ResolvedSeller, $dispute->fresh()->status);
+    }
+
+    /**
+     * A staff member deciding a dispute they are a party to is a conflict of
+     * interest. It is allowed — see above for why — but it is recorded, so it can
+     * be found later rather than being invisible.
+     */
+    public function test_a_decision_by_a_party_is_flagged_in_the_audit_log(): void
+    {
+        $dispute = $this->disputedOrder();
+        $buyer   = $dispute->order->buyer;
+        $buyer->roles()->attach(Role::where('name', 'super_admin')->value('id'));
+
+        $this->actingAs($buyer->fresh())
+            ->post("/admin/disputes/{$dispute->id}/full-refund", ['note' => 'Refunding my own order.'])
+            ->assertRedirect();
+
+        $this->assertDatabaseHas('audit_logs', ['action' => 'dispute.decided_by_party']);
+    }
+
+    /**
+     * The seeded staff roles differ in what they may do, and that must come from
+     * the permission model rather than from the role's name.
+     */
+    public function test_staff_authorization_follows_the_permission_model(): void
+    {
+        $dispute = $this->disputedOrder();
+
+        // super_admin and support both carry disputes.manage; neither is named
+        // 'admin', so neither is short-circuited by Gate::before.
+        foreach (['super_admin', 'support'] as $roleName) {
+            $staff = $this->asRole($roleName);
+            $this->assertTrue($staff->hasPermission('disputes.manage'), "{$roleName} should hold disputes.manage");
+
+            $this->actingAs($staff)
+                ->post("/admin/disputes/{$dispute->id}/internal-note", ['body' => "Note from {$roleName}."])
+                ->assertRedirect()
+                ->assertSessionHas('success');
+        }
+
+        // moderator is an admin-type role WITHOUT disputes.manage, so it is
+        // refused — authorization is still enforced, not blanket-granted.
+        $moderator = $this->asRole('moderator');
+        $this->assertFalse($moderator->hasPermission('disputes.manage'));
+        $this->assertTrue($moderator->isAdmin());
+
+        $this->actingAs($moderator)
+            ->post("/admin/disputes/{$dispute->id}/internal-note", ['body' => 'Should not land.'])
+            ->assertForbidden();
+
+        $this->actingAs($moderator)
+            ->post("/admin/disputes/{$dispute->id}/full-refund", ['note' => 'Should not land.'])
+            ->assertForbidden();
+    }
+
+    // ── Parties cannot forge staff rows ──────────────────────────────
+
+    public function test_a_buyer_cannot_post_an_internal_note(): void
+    {
+        $dispute = $this->disputedOrder();
+
+        // The admin endpoint is closed to them…
+        $this->actingAs($dispute->order->buyer)
+            ->post("/admin/disputes/{$dispute->id}/internal-note", ['body' => 'Pretending to be staff.'])
+            ->assertForbidden();
+
+        // …and so is the service, whatever the caller passes.
+        try {
+            app(DisputeService::class)->postMessage(
+                $dispute, $dispute->order->buyer, 'Forged internal note.', null, true,
+            );
+            $this->fail('A buyer was allowed to write an internal note.');
+        } catch (HttpException $e) {
+            $this->assertSame(403, $e->getStatusCode());
+        }
+
+        $this->assertSame(0, $dispute->internalNotes()->count());
+    }
+
+    public function test_a_seller_cannot_post_an_internal_note(): void
+    {
+        $dispute = $this->disputedOrder();
+
+        $this->actingAs($dispute->order->seller)
+            ->post("/admin/disputes/{$dispute->id}/internal-note", ['body' => 'Pretending to be staff.'])
+            ->assertForbidden();
+
+        try {
+            app(DisputeService::class)->postMessage(
+                $dispute, $dispute->order->seller, 'Forged internal note.', null, true,
+            );
+            $this->fail('A seller was allowed to write an internal note.');
+        } catch (HttpException $e) {
+            $this->assertSame(403, $e->getStatusCode());
+        }
+
+        $this->assertSame(0, $dispute->internalNotes()->count());
+    }
+
+    public function test_a_party_cannot_post_an_administrative_notice(): void
+    {
+        $dispute = $this->disputedOrder();
+
+        foreach ([$dispute->order->buyer, $dispute->order->seller] as $party) {
+            $this->actingAs($party)
+                ->post("/admin/disputes/{$dispute->id}/message", ['body' => 'Official-looking notice.'])
+                ->assertForbidden();
+
+            try {
+                app(DisputeService::class)->announce($dispute, $party, 'Official-looking notice.');
+                $this->fail('A party was allowed to announce as staff.');
+            } catch (HttpException $e) {
+                $this->assertSame(403, $e->getStatusCode());
+            }
+        }
+
+        $this->assertSame(0, $dispute->messages()->where('role', 'admin')->count());
+    }
+
+    // ── Cross-dispute isolation ──────────────────────────────────────
+
+    public function test_a_buyer_cannot_reach_another_disputes_thread(): void
+    {
+        $mine   = $this->disputedOrder();
+        $theirs = $this->disputedOrder();
+
+        $this->actingAs($mine->order->buyer)
+            ->get("/dashboard/disputes/{$theirs->id}")
+            ->assertForbidden();
+
+        $this->actingAs($mine->order->buyer)
+            ->post("/dashboard/disputes/{$theirs->id}/messages", ['body' => 'Butting in.'])
+            ->assertForbidden();
+
+        $this->assertSame(1, $theirs->messages()->count()); // just the opening line
+    }
+
+    public function test_a_seller_cannot_reach_another_sellers_dispute(): void
+    {
+        $mine   = $this->disputedOrder();
+        $theirs = $this->disputedOrder();
+
+        $this->actingAs($mine->order->seller)
+            ->get("/dashboard/disputes/{$theirs->id}")
+            ->assertForbidden();
+
+        $this->actingAs($mine->order->seller)
+            ->post("/dashboard/disputes/{$theirs->id}/messages", ['body' => 'Butting in.'])
+            ->assertForbidden();
+    }
+
+    // ── The live thread ──────────────────────────────────────────────
+
+    /**
+     * The page is told whether a broadcast driver exists. With none configured it
+     * polls instead, so this flag is what turns that on.
+     */
+    public function test_the_thread_reports_whether_broadcasting_is_configured(): void
+    {
+        $dispute = $this->disputedOrder();
+
+        config()->set('broadcasting.default', 'null');
+        $this->actingAs($dispute->order->buyer)
+            ->get("/dashboard/disputes/{$dispute->id}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('isRealtimeReady', false)->etc());
+
+        config()->set('broadcasting.default', 'reverb');
+        $this->actingAs($dispute->order->buyer)
+            ->get("/dashboard/disputes/{$dispute->id}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page->where('isRealtimeReady', true)->etc());
+    }
+
+    /**
+     * The buyer has the thread open; the seller replies. The buyer's next poll
+     * carries the new message — no full page load, and only the props the page
+     * asked for come back.
+     */
+    public function test_a_reply_reaches_the_other_party_without_a_page_reload(): void
+    {
+        $dispute = $this->disputedOrder();
+        $buyer   = $dispute->order->buyer;
+        $seller  = $dispute->order->seller;
+
+        // What the buyer has on screen right now.
+        $this->actingAs($buyer)
+            ->get("/dashboard/disputes/{$dispute->id}")
+            ->assertInertia(fn (Assert $page) => $page->has('thread', 1)->etc());
+
+        $this->actingAs($seller)
+            ->post("/dashboard/disputes/{$dispute->id}/messages", ['body' => 'Hi — looking at it now.'])
+            ->assertRedirect();
+
+        // The poll the open page performs.
+        $response = $this->actingAs($buyer)->partialReload($dispute, ['dispute', 'thread', 'pending', 'history', 'can']);
+        $response->assertOk();
+
+        $payload = $response->json('props');
+        $this->assertCount(2, $payload['thread']);
+        $this->assertSame('Hi — looking at it now.', $payload['thread'][1]['body']);
+        $this->assertFalse($payload['thread'][1]['is_mine']);   // it is the seller's
+        // A partial reload, not a whole page: untouched props are not resent.
+        $this->assertArrayNotHasKey('order', $payload);
+        $this->assertArrayNotHasKey('options', $payload);
+        // Ordering is preserved — oldest first, the opening system line still #1.
+        $this->assertTrue($payload['thread'][0]['is_system']);
+    }
+
+    public function test_the_poll_preserves_ordering_and_does_not_duplicate_rows(): void
+    {
+        $dispute = $this->disputedOrder();
+        $buyer   = $dispute->order->buyer;
+        $seller  = $dispute->order->seller;
+
+        $this->actingAs($buyer)->post("/dashboard/disputes/{$dispute->id}/messages", ['body' => 'First.']);
+        $this->actingAs($seller)->post("/dashboard/disputes/{$dispute->id}/messages", ['body' => 'Second.']);
+        $this->actingAs($buyer)->post("/dashboard/disputes/{$dispute->id}/messages", ['body' => 'Third.']);
+
+        // Polling repeatedly must not create or duplicate anything.
+        for ($i = 0; $i < 3; $i++) {
+            $this->actingAs($buyer)->partialReload($dispute, ['thread'])->assertOk();
+        }
+
+        $thread = $this->actingAs($buyer)->partialReload($dispute, ['thread'])->json('props.thread');
+
+        // Oldest first: the opening system line, then the three replies in the
+        // order they were sent, each exactly once.
+        $this->assertCount(4, $thread);
+        $this->assertTrue($thread[0]['is_system']);
+        $this->assertSame(
+            ['First.', 'Second.', 'Third.'],
+            array_map(fn (array $m) => $m['body'], array_slice($thread, 1)),
+        );
+        $this->assertSame(4, $dispute->messages()->count());
+    }
+
+    /**
+     * The poll is the only data path, and it re-authorizes every time — so there
+     * is no channel an outsider could subscribe to instead.
+     */
+    public function test_an_outsider_cannot_poll_a_dispute_they_cannot_view(): void
+    {
+        $dispute  = $this->disputedOrder();
+        $stranger = $this->buyer();
+
+        $this->actingAs($stranger)
+            ->partialReload($dispute, ['dispute', 'thread'])
+            ->assertForbidden();
+
+        // Another dispute's party is just as much an outsider here.
+        $other = $this->disputedOrder();
+        $this->actingAs($other->order->seller)
+            ->partialReload($dispute, ['thread'])
+            ->assertForbidden();
+    }
+
+    /** A poll must never hand a party someone else's internal notes. */
+    public function test_polling_never_leaks_internal_notes_to_a_party(): void
+    {
+        $dispute = $this->disputedOrder();
+        app(DisputeService::class)->addInternalNote($dispute, $this->makeSuperAdmin(), 'Staff eyes only.');
+
+        $thread = $this->actingAs($dispute->order->buyer)
+            ->partialReload($dispute, ['thread'])
+            ->json('props.thread');
+
+        $this->assertCount(1, $thread);                      // the opening line only
+        foreach ($thread as $row) {
+            $this->assertFalse($row['is_internal']);
+        }
+        $this->assertNotContains('Staff eyes only.', array_column($thread, 'body'));
+    }
+
+    /** An admin notice, unlike an internal note, is meant to reach both parties. */
+    public function test_polling_delivers_an_admin_notice_to_both_parties(): void
+    {
+        $dispute = $this->disputedOrder();
+
+        $this->actingAs($this->asRole('super_admin'))
+            ->post("/admin/disputes/{$dispute->id}/message", ['body' => 'Please both upload your logs.'])
+            ->assertRedirect();
+
+        foreach ([$dispute->order->buyer, $dispute->order->seller] as $party) {
+            $thread = $this->actingAs($party)->partialReload($dispute, ['thread'])->json('props.thread');
+
+            $bodies = array_column($thread, 'body');
+            $this->assertContains('Please both upload your logs.', $bodies);
+
+            $notice = collect($thread)->firstWhere('body', 'Please both upload your logs.');
+            // Reaches them as a system notice, never as a party's chat message.
+            $this->assertTrue($notice['is_system']);
+            $this->assertFalse($notice['is_internal']);
+            $this->assertSame('admin', $notice['role']);
+        }
     }
 }

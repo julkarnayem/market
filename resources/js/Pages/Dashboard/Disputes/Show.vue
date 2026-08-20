@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Link, router, useForm } from '@inertiajs/vue3';
 import DashboardLayout from '@/Layouts/DashboardLayout.vue';
 import Breadcrumb from '@/Components/Breadcrumb.vue';
@@ -90,6 +90,11 @@ const props = defineProps<{
     history: HistoryRow[];
     /** Negotiable resolution types; release-to-seller is admin-only. */
     options: Option[];
+    /**
+     * True once a broadcast driver is configured. While it is false the page
+     * polls for new thread rows instead — see the live-thread block below.
+     */
+    isRealtimeReady: boolean;
     can: {
         message: boolean;
         evidence: boolean;
@@ -185,6 +190,48 @@ function toneFor(m: ThreadMessage): string {
     if (m.is_system) return 'border-slate-200 bg-slate-50';
     return m.is_mine ? 'border-brand-200 bg-brand-50/60' : 'border-slate-200 bg-white';
 }
+
+// ── Live thread ──────────────────────────────────────────────────
+// Same approach as the order chat (Dashboard/Messages/Index.vue): with no
+// broadcast driver configured, poll for new thread rows with an Inertia partial
+// reload. It re-runs DisputeController::show(), so every refresh is authorized
+// again and the payload is built by threadFor() — internal notes stay filtered
+// for whoever is reading. Nothing is written, so no rows can be duplicated.
+//
+// Only the props that another party's action can change are refetched, so the
+// composer text, the file picker and scroll position all survive a tick. A
+// message the viewer sends themselves arrives the same way: the POST redirects
+// back and re-renders `thread` from the server, so there is no optimistic local
+// copy that could double up.
+const POLL_MS = 5000;
+let pollTimer: ReturnType<typeof setInterval> | undefined;
+
+function stopPolling(): void {
+    if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = undefined;
+    }
+}
+
+function startPolling(): void {
+    stopPolling();
+    if (props.isRealtimeReady) return;
+    pollTimer = setInterval(() => {
+        // Don't poll a page nobody is looking at, and never stack a second
+        // request on top of an in-flight action.
+        if (document.hidden || processing.value || messageForm.processing) return;
+        router.reload({ only: ['dispute', 'thread', 'pending', 'history', 'can'] });
+    }, POLL_MS);
+}
+
+onMounted(startPolling);
+onBeforeUnmount(stopPolling);
+
+// A settled dispute stops changing, so stop asking.
+watch(
+    () => props.dispute.is_active,
+    (active) => (active ? startPolling() : stopPolling()),
+);
 </script>
 
 <template>

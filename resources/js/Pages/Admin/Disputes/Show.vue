@@ -282,7 +282,8 @@ function toneFor(m: ThreadMessage): string {
                     </div>
 
                     <template v-if="canManage">
-                        <!-- Visible to both parties -->
+                        <!-- An on-the-record notice to both parties, not a chat reply:
+                             staff are not participants in the buyer/seller thread. -->
                         <form class="mt-3 flex flex-col gap-2" @submit.prevent="sendMessage">
                             <textarea
                                 v-model="messageForm.body"
@@ -290,7 +291,7 @@ function toneFor(m: ThreadMessage): string {
                                 class="textarea text-sm"
                                 :class="messageForm.errors.body && 'input-error'"
                                 maxlength="5000"
-                                placeholder="Reply to both parties…"
+                                placeholder="Post an official notice to both parties…"
                             ></textarea>
                             <p v-if="messageForm.errors.body" class="field-error">
                                 {{ messageForm.errors.body }}
@@ -300,7 +301,7 @@ function toneFor(m: ThreadMessage): string {
                                 class="btn-primary self-end"
                                 :disabled="messageForm.processing || messageForm.body.trim().length < 2"
                             >
-                                Post reply
+                                Post notice
                             </button>
                         </form>
 

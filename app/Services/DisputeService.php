@@ -166,10 +166,26 @@ class DisputeService
     ): DisputeMessage {
         $role = $dispute->roleOf($author);
         abort_if($role === null, 403, 'You are not a party to this dispute.');
-        abort_if($internal && $role !== 'admin', 403);
+        // Internal notes are a staff capability, so they ask isStaff() rather than
+        // the seat: an admin who also happens to be the buyer still writes notes.
+        abort_if($internal && !$dispute->isStaff($author), 403);
+        // Staff do not hold a seat in the buyer↔seller conversation. A Text row is
+        // participant speech — DisputeMessageType::isFromParticipant() is the same
+        // distinction — so an admin writes through announce() or addInternalNote()
+        // instead. Without this an admin's message would be indistinguishable from
+        // a party's, which is what the separation exists to prevent.
+        //
+        // Keyed on the seat, not on isStaff(): a staff member who really is the
+        // buyer or seller here speaks as that party like anyone else. Only someone
+        // whose sole standing is staff is refused.
+        abort_if(
+            $role === 'admin' && !$internal,
+            403,
+            'Staff post administrative notices, not thread messages.',
+        );
         // Staff may annotate a closed dispute; the parties may not reopen the
         // conversation once it has been settled.
-        abort_unless($dispute->isActive() || $role === 'admin', 422, 'This dispute is closed.');
+        abort_unless($dispute->isActive() || $dispute->isStaff($author), 422, 'This dispute is closed.');
 
         if ($clientMessageId !== null) {
             $existing = $dispute->messages()->where('client_message_id', $clientMessageId)->first();
@@ -211,7 +227,7 @@ class DisputeService
     ): DisputeEvidence {
         $role = $dispute->roleOf($author);
         abort_if($role === null, 403, 'You are not a party to this dispute.');
-        abort_unless($dispute->isActive() || $role === 'admin', 422, 'This dispute is closed.');
+        abort_unless($dispute->isActive() || $dispute->isStaff($author), 422, 'This dispute is closed.');
 
         return DB::transaction(function () use ($dispute, $author, $file, $note, $role) {
             $path = $file->store("disputes/{$dispute->id}", 'private');
@@ -246,6 +262,33 @@ class DisputeService
         });
     }
 
+    /**
+     * An admin's notice to both parties.
+     *
+     * Staff communicate on the record, not as a peer in the conversation: this is
+     * a System row, so isFromParticipant() is false and the Vue pages render it as
+     * an administrative notice rather than a chat bubble. It is attributed to the
+     * admin for the audit trail, which is why it is not written through system().
+     */
+    public function announce(Dispute $dispute, User $admin, string $body): DisputeMessage
+    {
+        abort_unless($dispute->isStaff($admin), 403, 'Only staff can post an administrative notice.');
+
+        $message = $this->write($dispute, DisputeMessageType::System, $body, [
+            'user_id' => $admin->id,
+            'role'    => 'admin',
+        ]);
+
+        $this->audit->log('dispute.admin_announcement', $dispute);
+
+        foreach ($this->partiesFor($dispute, 'both') as $user) {
+            $this->notifyParty($dispute, $user, 'dispute_message', 'Dispute update',
+                "An admin posted an update on dispute {$dispute->displayReference()}.");
+        }
+
+        return $message;
+    }
+
     /** An admin asks a named side for more evidence. Visible to both. */
     public function requestEvidence(Dispute $dispute, User $admin, string $from, string $note = ''): DisputeMessage
     {
@@ -268,7 +311,7 @@ class DisputeService
     /** Staff-only commentary. Never leaves the admin screen. */
     public function addInternalNote(Dispute $dispute, User $admin, string $body): DisputeMessage
     {
-        abort_unless($dispute->roleOf($admin) === 'admin', 403);
+        abort_unless($dispute->isStaff($admin), 403, 'Only staff can write an internal note.');
 
         $note = $this->write($dispute, DisputeMessageType::InternalNote, $body, [
             'user_id'     => $admin->id,
@@ -428,7 +471,7 @@ class DisputeService
         abort_if($role === null, 403, 'You are not a party to this dispute.');
         abort_if((int) $resolution->proposed_by === $actor->id, 403, 'You cannot answer your own proposal.');
         abort_unless($resolution->isPending(), 422, 'That proposal is no longer on the table.');
-        abort_unless($role === $resolution->awaitingRole() || $role === 'admin', 403);
+        abort_unless($role === $resolution->awaitingRole() || $dispute->isStaff($actor), 403);
 
         $resolution->update([
             'status'       => DisputeResolution::STATUS_DECLINED,
@@ -533,7 +576,9 @@ class DisputeService
     {
         $role = $dispute->roleOf($actor);
         abort_if($role === null, 403, 'You are not a party to this dispute.');
-        abort_if($role === 'seller', 403, 'A seller cannot close a dispute against them.');
+        // A seller cannot close a claim filed against them — unless they are also
+        // staff, in which case they are closing it in that capacity.
+        abort_if($role === 'seller' && !$dispute->isStaff($actor), 403, 'A seller cannot close a dispute against them.');
         abort_unless($dispute->isActive(), 422, 'This dispute is already closed.');
 
         DB::transaction(function () use ($dispute, $actor, $note, $role) {
@@ -571,6 +616,11 @@ class DisputeService
     /**
      * An admin's decision. Recorded in dispute_resolutions pre-accepted, so the
      * audit trail and the negotiation history are one history.
+     *
+     * Note the audit metadata records when the deciding staff member is also a
+     * party to the dispute. That is not blocked here — it is a legitimate setup on
+     * a staging or single-operator deployment — but it is a conflict of interest
+     * worth being able to find after the fact.
      */
     private function decide(
         Dispute               $dispute,
@@ -580,8 +630,16 @@ class DisputeService
         DisputeStatus         $final,
         string                $note,
     ): void {
-        abort_unless($dispute->roleOf($admin) === 'admin', 403);
+        abort_unless($dispute->isStaff($admin), 403, 'Only staff can decide a dispute.');
         abort_unless($dispute->isResolvable(), 422, 'Dispute cannot be resolved in its current state.');
+
+        if ($dispute->isParty($admin)) {
+            $this->audit->log('dispute.decided_by_party', $dispute, [], [
+                'staff_id' => $admin->id,
+                'seat'     => $dispute->roleOf($admin),
+                'type'     => $type->value,
+            ]);
+        }
 
         $resolution = DB::transaction(fn () => DisputeResolution::create([
             'dispute_id'   => $dispute->id,

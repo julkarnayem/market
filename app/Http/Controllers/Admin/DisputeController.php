@@ -226,12 +226,17 @@ class DisputeController extends Controller
     }
 
     /** A message from staff, visible to both parties. */
+    /**
+     * An administrative notice to both parties. Recorded as a System row rather
+     * than a Text one — staff do not hold a seat in the buyer↔seller thread, so
+     * their messages stay distinguishable from party speech.
+     */
     public function message(Request $request, Dispute $dispute)
     {
         $this->authorize('disputes.manage');
         $data = $request->validate(['body' => 'required|string|min:2|max:5000']);
-        $this->service->postMessage($dispute, Auth::user(), $data['body']);
-        return back()->with('success', 'Message posted to the dispute.');
+        $this->service->announce($dispute, Auth::user(), $data['body']);
+        return back()->with('success', 'Notice posted to the dispute.');
     }
 
     /** Staff-only commentary. Never rendered outside this screen. */

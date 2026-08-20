@@ -105,6 +105,25 @@ class Dispute extends Model
     }
 
     /**
+     * Staff capability, asked independently of party membership.
+     *
+     * roleOf() answers "which seat does this person occupy in the thread", and it
+     * deliberately resolves a party before staff: someone who bought the order is
+     * the buyer there, even if they also work here. Whether someone may act as
+     * STAFF is a different question, and it must not be answered by roleOf() —
+     * a staff member who is also a party would come back 'buyer' and be locked out
+     * of every administrative action on that dispute.
+     *
+     * The capability itself is the permission model's business, not a relationship
+     * to this row, which is why it reads the same `disputes.manage` permission the
+     * admin controller gates on.
+     */
+    public function isStaff(User $user): bool
+    {
+        return $user->isAdmin() || $user->hasPermission('disputes.manage');
+    }
+
+    /**
      * Reference for a dispute created before the column existed, or one being
      * built right now. Stored on create, so this is only a fallback.
      */
