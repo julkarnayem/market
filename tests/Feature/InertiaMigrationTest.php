@@ -671,6 +671,11 @@ class InertiaMigrationTest extends TestCase
      * (see [[market-pre-existing-issues]]) so the order graph is built with
      * create(); Asset::factory() works and supplies the seller-owned listing.
      * ৳2,500.00 buyer_total / ৳2,250.00 seller_earning in poisha.
+     *
+     * Both wallets are seeded because that is what a paid order looks like: the
+     * seller's earning was credited to their PENDING balance at payment time, and
+     * WalletService reads the row with firstOrFail(), so a decision that touches
+     * either side would 404 without one.
      */
     private function seedDispute(array $disputeOverrides = []): Dispute
     {
@@ -698,13 +703,26 @@ class InertiaMigrationTest extends TestCase
             'buyer_total'         => 250000,
             'seller_earning'      => 225000,
             'currency'            => 'BDT',
+            // The order mirrors its dispute for the life of it, so seed it the way
+            // DisputeService::open() would leave it.
+            'status'              => 'disputed',
+            'dispute_status'      => 'open',
+        ]);
+
+        Wallet::create([
+            'user_id' => $buyer->id, 'available_balance' => 0, 'pending_balance' => 0, 'currency' => 'BDT',
+        ]);
+        Wallet::create([
+            'user_id' => $seller->id, 'available_balance' => 0, 'pending_balance' => 225000, 'currency' => 'BDT',
         ]);
 
         return Dispute::create(array_merge([
-            'order_id'  => $order->id,
-            'opened_by' => $buyer->id,
-            'reason'    => 'Item not as described.',
-            'status'    => 'open',
+            'order_id'         => $order->id,
+            'opened_by'        => $buyer->id,
+            'reason_code'      => 'false_information',
+            'description'      => 'The analytics screenshots were not from this page.',
+            'status'           => 'open',
+            'last_activity_at' => now(),
         ], $disputeOverrides));
     }
 
@@ -715,7 +733,7 @@ class InertiaMigrationTest extends TestCase
      */
     public function test_admin_disputes_index_renders_the_tabbed_list(): void
     {
-        $this->seedDispute();
+        $dispute = $this->seedDispute();
 
         $this->actingAs($this->makeAdmin())
             ->get('/admin/disputes')
@@ -723,18 +741,25 @@ class InertiaMigrationTest extends TestCase
             ->assertInertia(fn (Assert $page) => $page
                 ->component('Admin/Disputes/Index')
                 ->where('filters.status', 'open')
-                ->has('tabs', 6)
+                // Six lifecycle tabs plus "All"; the three resolved_* statuses
+                // collapse into the single "Resolved" filter.
+                ->has('tabs', 7)
                 ->has('tabs.0', fn (Assert $t) => $t
                     ->where('value', 'open')
                     ->where('label', 'Open')
                 )
                 ->has('disputes.data', 1)
                 ->has('disputes.data.0', fn (Assert $d) => $d
+                    ->where('reference', 'D-'.(10000 + $dispute->id))
                     ->where('buyer', 'Bilkis Buyer')
                     ->where('seller', 'Selim Seller')
                     ->where('order_total', '৳2,500.00')
+                    // The queue shows the fixed reason's label; the buyer's own
+                    // account of it lives in `description` and is not listed.
+                    ->where('reason', 'Seller gave false information')
                     ->where('status', 'open')
                     ->where('status_label', 'Open')
+                    ->where('is_escalated', false)
                     ->etc()
                 )
             );
@@ -742,8 +767,9 @@ class InertiaMigrationTest extends TestCase
 
     /**
      * show() whitelists the dispute + order summary and formats money server-side.
-     * An open dispute reports is_open (the Vue swaps in the resolution panel), and
-     * with nothing attached the evidence + order-messages lists are empty.
+     * A live dispute reports is_active (the Vue swaps in the decision panel), and
+     * with nothing attached the thread, evidence, proposal and order-message lists
+     * are all empty.
      */
     public function test_admin_disputes_show_renders_the_review(): void
     {
@@ -755,32 +781,40 @@ class InertiaMigrationTest extends TestCase
             ->assertInertia(fn (Assert $page) => $page
                 ->component('Admin/Disputes/Show')
                 ->where('dispute.status', 'open')
-                ->where('dispute.is_open', true)
-                ->where('dispute.reason', 'Item not as described.')
+                ->where('dispute.is_active', true)
+                ->where('dispute.is_escalated', false)
+                ->where('dispute.reason', 'Seller gave false information')
+                ->where('dispute.reason_code', 'false_information')
+                ->where('dispute.description', 'The analytics screenshots were not from this page.')
                 ->where('dispute.resolution_type', null)
                 ->where('order.buyer', 'Bilkis Buyer')
                 ->where('order.seller', 'Selim Seller')
                 ->where('order.buyer_total', '৳2,500.00')
                 ->where('order.seller_earning', '৳2,250.00')
                 ->has('order.buyer_total_bdt')
+                // Seeded straight into the table rather than through open(), so
+                // there is no system message announcing it.
+                ->has('thread', 0)
                 ->has('evidence', 0)
+                ->has('resolutions', 0)
+                ->where('pending', null)
                 ->has('messages', 0)
+                ->has('reasons', 7)
             );
     }
 
     /**
-     * The full-refund resolution is a real money movement (DisputeService credits
-     * the buyer via WalletService — pure DB, no notifications), so this is a full
-     * round-trip: the buyer's wallet gains the whole buyer_total and the dispute is
-     * marked resolved. Authorizes disputes.manage, so it needs makeSuperAdmin().
+     * The full-refund decision is a real money movement (DisputeService drives
+     * WalletService — pure DB, and inApp() swallows notification failures), so this
+     * is a full round-trip: the buyer's wallet gains the whole buyer_total, the
+     * seller's pending hold is reversed rather than paid out, and the dispute lands
+     * on resolved_buyer. Authorizes disputes.manage, so it needs makeSuperAdmin().
      */
     public function test_admin_can_resolve_a_dispute_with_a_full_refund(): void
     {
-        $dispute = $this->seedDispute();
-        $buyerId = $dispute->order->buyer_user_id;
-        Wallet::create([
-            'user_id' => $buyerId, 'available_balance' => 0, 'pending_balance' => 0, 'currency' => 'BDT',
-        ]);
+        $dispute  = $this->seedDispute();
+        $buyerId  = $dispute->order->buyer_user_id;
+        $sellerId = $dispute->order->seller_user_id;
 
         $this->actingAs($this->makeSuperAdmin())
             ->from('/admin/disputes/'.$dispute->id)
@@ -790,33 +824,42 @@ class InertiaMigrationTest extends TestCase
             ->assertRedirect()
             ->assertSessionHas('success');
 
-        // ৳2,500.00 buyer_total credited back to the buyer.
+        // ৳2,500.00 buyer_total credited back to the buyer…
         $this->assertSame(250000, Wallet::where('user_id', $buyerId)->value('available_balance'));
+        // …and the seller's ৳2,250.00 hold reversed out of pending, not released.
+        $this->assertSame(0, Wallet::where('user_id', $sellerId)->value('pending_balance'));
+        $this->assertSame(0, Wallet::where('user_id', $sellerId)->value('available_balance'));
 
         $fresh = $dispute->fresh();
-        $this->assertSame('resolved', $fresh->status->value);
+        $this->assertSame('resolved_buyer', $fresh->status->value);
         $this->assertSame('full_refund', $fresh->resolution_type);
         $this->assertSame(250000, $fresh->resolution_amount);
+        $this->assertSame('refunded', $dispute->order->fresh()->status->value);
     }
 
     /**
-     * Updating a dispute's status is a pure DB write (no wallet movement); the
-     * PATCH flips the status and flashes success. Authorizes disputes.manage.
+     * The old PATCH /status endpoint is gone — staff no longer set an arbitrary
+     * status, they take ownership of a dispute the parties will not settle
+     * themselves. Escalating is a pure DB write plus a system message on the
+     * thread; no money moves. Authorizes disputes.manage.
      */
-    public function test_admin_can_update_a_dispute_status(): void
+    public function test_admin_can_escalate_a_dispute(): void
     {
         $dispute = $this->seedDispute();
 
         $this->actingAs($this->makeSuperAdmin())
             ->from('/admin/disputes/'.$dispute->id)
-            ->patch('/admin/disputes/'.$dispute->id.'/status', [
-                'status' => 'under_review',
-                'note'   => 'Escalated to a senior agent for review.',
+            ->post('/admin/disputes/'.$dispute->id.'/escalate', [
+                'note' => 'Neither side has moved in a week.',
             ])
             ->assertRedirect()
             ->assertSessionHas('success');
 
-        $this->assertSame('under_review', $dispute->fresh()->status->value);
+        $fresh = $dispute->fresh();
+        $this->assertSame('escalated', $fresh->status->value);
+        $this->assertNotNull($fresh->escalated_at);
+        // The order's mirror follows the dispute, so order screens never join.
+        $this->assertSame('escalated', $dispute->order->fresh()->dispute_status);
     }
 
     // ── Admin: Categories (checkpoint 32) ─────────────────────────────

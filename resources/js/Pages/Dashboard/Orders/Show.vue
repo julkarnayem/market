@@ -34,6 +34,15 @@ interface OrderData {
 interface TimelineEntry { id: number; to_status: string; note: string | null; at: string | null }
 interface ChatMessage { id: number; body: string; mine: boolean; time: string }
 interface Participant { role: string; name: string; initial: string }
+/** The order's current dispute, if it has one. */
+interface DisputeRef {
+    id: number;
+    reference: string;
+    status: string;
+    status_label: string;
+    is_active: boolean;
+    url: string;
+}
 
 const props = defineProps<{
     order: OrderData;
@@ -47,6 +56,8 @@ const props = defineProps<{
     participants: Participant[];
     payment: { paid_at_full: string | null } | null;
     alreadyReviewed: boolean;
+    /** Null until someone opens one. Both parties get the link, not just the buyer. */
+    dispute: DisputeRef | null;
 }>();
 
 /** Inline composer — the send endpoint redirects back(), so Inertia re-renders with the new message. */
@@ -244,6 +255,18 @@ function completeOrder() {
                     </Link>
                 </div>
 
+                <!-- Live dispute — both parties work it from the same thread. -->
+                <div v-if="dispute" class="card-p">
+                    <div class="mb-2 flex items-center justify-between gap-2">
+                        <h2 class="section-title">Dispute</h2>
+                        <StatusBadge :status="dispute.status" />
+                    </div>
+                    <p class="mb-2 font-mono text-xs text-slate-500">{{ dispute.reference }}</p>
+                    <Link :href="dispute.url" :class="dispute.is_active ? 'btn-danger w-full' : 'btn-outline w-full'">
+                        {{ dispute.is_active ? '⚑ Open dispute thread' : 'View dispute' }}
+                    </Link>
+                </div>
+
                 <!-- Buyer: Complete / Review / Dispute -->
                 <template v-if="isBuyer">
                     <div v-if="order.can_be_completed" class="card-p">
@@ -279,7 +302,8 @@ function completeOrder() {
                         </Link>
                     </div>
 
-                    <div v-if="order.can_open_dispute" class="card-p">
+                    <!-- Only offer to open one when there isn't one already. -->
+                    <div v-if="order.can_open_dispute && !dispute" class="card-p">
                         <Link :href="route('dashboard.orders.dispute', order.id)" class="btn-danger w-full">
                             ⚑ Open dispute
                         </Link>

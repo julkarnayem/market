@@ -3,7 +3,7 @@
 use App\Http\Controllers\Auth\{AuthenticatedSessionController,EmailVerificationController,NewPasswordController,PasswordResetLinkController,RegisteredUserController};
 use App\Http\Controllers\Admin\{DashboardController as AdminDashboard,FraudController,
 UserController as AdminUser,VerificationController as AdminVerification,ListingController as AdminListing,CategoryController as AdminCategory,WithdrawalController as AdminWithdrawal,SettingsController as AdminSettings,AuditController as AdminAudit,OfferController as AdminOffer,OrderController as AdminOrder,PaymentController as AdminPayment,DisputeController as AdminDispute,WalletController as AdminWallet,PromotionController as AdminPromotion,NotificationController as AdminNotification,TicketController as AdminTicket,StaffController,RoleController,ReportController,MessageReportController,SupportTemplateController};
-use App\Http\Controllers\Dashboard\{CustomOfferController,DashboardController,FavoriteController,ListingController,MessageController,NotificationController,OrderController,ProfileController as DashProfile,PromotionController,ReviewController,TicketController,WalletController,WithdrawalController};
+use App\Http\Controllers\Dashboard\{CustomOfferController,DashboardController,DisputeController,FavoriteController,ListingController,MessageController,NotificationController,OrderController,ProfileController as DashProfile,PromotionController,ReviewController,TicketController,WalletController,WithdrawalController};
 use App\Http\Controllers\{BidController,CheckoutController,ListingContactController,MarketplaceController,PageController,ProfileController,SeoController};
 use Illuminate\Support\Facades\Route;
 
@@ -123,6 +123,24 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/orders/{order}/dispute', [OrderController::class, 'openDispute'])->name('.orders.dispute.submit');
         Route::get('/orders/{order}/delivery-file', [OrderController::class, 'deliveryAttachment'])->name('.orders.delivery-file');
 
+        // Disputes — the buyer's and seller's side of one. Every action here is
+        // authorized by DisputePolicy; the admin decisions live under /admin.
+        Route::get('/disputes', [DisputeController::class, 'index'])->name('.disputes');
+        Route::get('/disputes/{dispute}', [DisputeController::class, 'show'])->name('.disputes.show');
+        Route::post('/disputes/{dispute}/messages', [DisputeController::class, 'message'])->name('.disputes.message');
+        Route::post('/disputes/{dispute}/evidence', [DisputeController::class, 'storeEvidence'])->name('.disputes.evidence.store');
+        // The only route to a private evidence file — it authorizes the reader.
+        Route::get('/disputes/{dispute}/evidence/{evidence}', [DisputeController::class, 'evidence'])->name('.disputes.evidence');
+        Route::post('/disputes/{dispute}/escalate', [DisputeController::class, 'escalate'])->name('.disputes.escalate');
+        Route::post('/disputes/{dispute}/cancel', [DisputeController::class, 'cancel'])->name('.disputes.cancel');
+        Route::post('/disputes/{dispute}/proposals', [DisputeController::class, 'propose'])->name('.disputes.propose');
+
+        // Answering a proposal keys on the proposal, not the dispute — the policy
+        // resolves the dispute from it.
+        Route::post('/dispute-proposals/{resolution}/accept', [DisputeController::class, 'acceptProposal'])->name('.disputes.proposal.accept');
+        Route::post('/dispute-proposals/{resolution}/decline', [DisputeController::class, 'declineProposal'])->name('.disputes.proposal.decline');
+        Route::post('/dispute-proposals/{resolution}/withdraw', [DisputeController::class, 'withdrawProposal'])->name('.disputes.proposal.withdraw');
+
         // Reviews
         Route::get('/orders/{order}/review', [ReviewController::class, 'create'])->name('.orders.review');
         Route::post('/orders/{order}/review', [ReviewController::class, 'store'])->name('.orders.review.store');
@@ -219,7 +237,13 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/disputes/{dispute}/full-refund', [AdminDispute::class, 'fullRefund'])->name('.disputes.full-refund');
         Route::post('/disputes/{dispute}/partial-refund', [AdminDispute::class, 'partialRefund'])->name('.disputes.partial-refund');
         Route::post('/disputes/{dispute}/release-seller', [AdminDispute::class, 'releaseToSeller'])->name('.disputes.release-seller');
-        Route::patch('/disputes/{dispute}/status', [AdminDispute::class, 'updateStatus'])->name('.disputes.status');
+        Route::post('/disputes/{dispute}/replacement', [AdminDispute::class, 'replacement'])->name('.disputes.replacement');
+        Route::post('/disputes/{dispute}/close', [AdminDispute::class, 'close'])->name('.disputes.close');
+        // Staff take ownership of a dispute the parties will not settle themselves.
+        Route::post('/disputes/{dispute}/escalate', [AdminDispute::class, 'escalate'])->name('.disputes.escalate');
+        Route::post('/disputes/{dispute}/message', [AdminDispute::class, 'message'])->name('.disputes.message');
+        Route::post('/disputes/{dispute}/internal-note', [AdminDispute::class, 'internalNote'])->name('.disputes.note');
+        Route::post('/disputes/{dispute}/request-evidence', [AdminDispute::class, 'requestEvidence'])->name('.disputes.request-evidence');
 
         // Finance
         Route::get('/wallets', [AdminWallet::class, 'index'])->name('.wallets');

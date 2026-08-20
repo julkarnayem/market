@@ -4,9 +4,12 @@ namespace App\Providers;
 use App\Contracts\SmsServiceInterface;
 use App\Models\Asset;
 use App\Models\Bid;
+use App\Models\Dispute;
+use App\Models\DisputeResolution;
 use App\Models\Offer;
 use App\Policies\AssetPolicy;
 use App\Policies\BidPolicy;
+use App\Policies\DisputePolicy;
 use App\Policies\OfferPolicy;
 use App\Services\AuditLogger;
 use App\Services\BidService;
@@ -77,6 +80,7 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(DisputeService::class, fn($a) => new DisputeService(
             $a->make(WalletService::class),
             $a->make(AuditLogger::class),
+            $a->make(NotificationService::class),
         ));
         $this->app->singleton(EarningReleaseService::class, fn($a) => new EarningReleaseService(
             $a->make(WalletService::class),
@@ -102,6 +106,10 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(Asset::class, AssetPolicy::class);
         Gate::policy(Bid::class, BidPolicy::class);
         Gate::policy(Offer::class, OfferPolicy::class);
+        Gate::policy(Dispute::class, DisputePolicy::class);
+        // Accept/decline/withdraw authorize against the proposal itself, which
+        // resolves its own dispute — so the resolution needs the policy too.
+        Gate::policy(DisputeResolution::class, DisputePolicy::class);
 
         // Super-admin bypass
         Gate::before(fn($user) => $user->hasRole('admin') ? true : null);

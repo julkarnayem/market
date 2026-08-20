@@ -1,9 +1,11 @@
 <?php
 namespace App\Http\Controllers\Dashboard;
 
+use App\Enums\DisputeReason;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\Review;
+use App\Services\DisputeService;
 use App\Services\OrderService;
 use App\Support\Money;
 use Illuminate\Http\Request;
@@ -12,7 +14,10 @@ use Inertia\Inertia;
 
 class OrderController extends Controller
 {
-    public function __construct(private readonly OrderService $service) {}
+    public function __construct(
+        private readonly OrderService   $service,
+        private readonly DisputeService $disputes,
+    ) {}
 
     public function index()
     {
@@ -49,7 +54,7 @@ class OrderController extends Controller
     {
         $this->authorize('view', $order);
         $order->load(['asset.coverImage','asset.category','buyer','seller','statusHistory',
-                      'delivery','latestPayment','conversation.messages']);
+                      'delivery','latestPayment','conversation.messages','dispute']);
         $userId   = Auth::id();
         $isBuyer  = $order->buyer_user_id === $userId;
         $isSeller = $order->seller_user_id === $userId;
@@ -111,6 +116,17 @@ class OrderController extends Controller
                 'paid_at_full' => $order->paid_at?->format('d M Y, H:i'),
             ] : null,
             'alreadyReviewed' => Review::where('order_id', $order->id)->exists(),
+            // The current dispute, if any. Order::dispute() is latestOfMany, so
+            // this is the live one rather than an arbitrary historical row — the
+            // page links to its thread instead of offering to open another.
+            'dispute' => $order->dispute ? [
+                'id'           => $order->dispute->id,
+                'reference'    => $order->dispute->displayReference(),
+                'status'       => $order->dispute->status->value,
+                'status_label' => $order->dispute->status->label(),
+                'is_active'    => $order->dispute->isActive(),
+                'url'          => route('dashboard.disputes.show', $order->dispute->id),
+            ] : null,
         ]);
     }
 
@@ -151,16 +167,32 @@ class OrderController extends Controller
             'order' => [
                 'id'           => $order->id,
                 'order_number' => $order->order_number,
+                'asset_title'  => $order->asset?->title ?? '—',
+                'total'        => Money::format($order->buyer_total),
             ],
+            // The reason list and the validation rule below read from the same
+            // enum, so the form can never offer a code the request would reject.
+            'reasons' => DisputeReason::options(),
         ]);
     }
 
     public function openDispute(Request $request, Order $order)
     {
         $this->authorize('openDispute', $order);
-        $data = $request->validate(['reason' => 'required|string|min:20|max:2000']);
-        $this->service->openDispute($order, Auth::user(), $data['reason']);
-        return redirect()->route('dashboard.orders.show', $order)->with('success', 'Dispute opened. Admin will review within 24–48 hours.');
+        $data = $request->validate([
+            'reason_code' => ['required', DisputeReason::rule()],
+            'description' => 'required|string|min:20|max:2000',
+        ]);
+
+        $dispute = $this->disputes->open(
+            $order,
+            Auth::user(),
+            DisputeReason::from($data['reason_code']),
+            $data['description'],
+        );
+
+        return redirect()->route('dashboard.disputes.show', $dispute->id)
+            ->with('success', "Dispute {$dispute->reference} opened. The seller has 48 hours to respond.");
     }
 
     /** Serve private delivery attachment (authorized participants only) */

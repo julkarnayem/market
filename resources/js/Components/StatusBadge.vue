@@ -66,10 +66,13 @@ const MAP: Record<string, Entry> = {
     waiting_for_staff: ['brand', 'Waiting on Staff', '◐'],
     resolved: ['mint', 'Resolved', '✓'],
     closed: ['slate', 'Closed', '○'],
-    // Dispute
-    under_review: ['brand', 'Under Review', '◐'],
-    waiting_for_buyer: ['amber', 'Waiting for Buyer', '◐'],
-    waiting_for_seller: ['amber', 'Waiting for Seller', '◐'],
+    // Dispute (the lifecycle in App\Enums\DisputeStatus; `open`, `refunded`,
+    // `cancelled` and `escalated` reuse the entries above, which read the same).
+    seller_responded: ['brand', 'Seller Responded', '↩'],
+    negotiating: ['amber', 'Negotiating', '⇄'],
+    resolved_buyer: ['mint', 'Resolved — Buyer', '✓'],
+    resolved_seller: ['mint', 'Resolved — Seller', '✓'],
+    resolved_partial: ['mint', 'Resolved — Partial', '✓'],
     // Fraud / Review
     reviewing: ['brand', 'Reviewing', '◐'],
     cleared: ['mint', 'Cleared', '✓'],

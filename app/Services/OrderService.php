@@ -7,7 +7,6 @@ use App\Enums\OrderStatus;
 use App\Models\Asset;
 use App\Models\Bid;
 use App\Models\Conversation;
-use App\Models\Dispute;
 use App\Models\Offer;
 use App\Models\Order;
 use App\Models\OrderDelivery;
@@ -341,28 +340,6 @@ class OrderService
             ]);
             $this->recordHistory($order, 'delivered', 'completed', null, 'Auto-completed after buyer protection window');
             $this->audit->log('order.auto_completed', $order);
-        });
-    }
-
-    /**
-     * Buyer opens a dispute entry point.
-     */
-    public function openDispute(Order $order, User $buyer, string $reason): Dispute
-    {
-        abort_unless($order->buyer_user_id === $buyer->id, 403);
-        abort_unless($order->status->canOpenDispute(), 422, 'A dispute cannot be opened for this order right now.');
-
-        return DB::transaction(function () use ($order, $buyer, $reason) {
-            $dispute = Dispute::create([
-                'order_id'    => $order->id,
-                'opened_by'   => $buyer->id,
-                'reason'      => $reason,
-                'status'      => 'open',
-            ]);
-            $order->update(['status' => OrderStatus::Disputed, 'dispute_status' => 'open']);
-            $this->recordHistory($order, 'delivered', 'disputed', $buyer->id, "Dispute opened: {$reason}");
-            $this->audit->log('order.disputed', $order);
-            return $dispute;
         });
     }
 

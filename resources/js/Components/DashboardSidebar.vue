@@ -17,6 +17,7 @@ const items: Item[] = [
     { label: 'Overview', icon: '▦', route: 'dashboard', match: ['dashboard'] },
     { label: 'My Purchases', icon: '🛍️', route: 'dashboard.purchases', match: ['dashboard.purchases'] },
     { label: 'My Orders', icon: '📦', route: 'dashboard.orders', match: ['dashboard.orders', 'dashboard.orders.*'] },
+    { label: 'Disputes', icon: '⚑', route: 'dashboard.disputes', match: ['dashboard.disputes', 'dashboard.disputes.*'] },
     { label: 'My Listings', icon: '🏷️', route: 'dashboard.listings', match: ['dashboard.listings', 'dashboard.listings.show', 'dashboard.listings.edit'] },
     { label: 'Create Listing', icon: '＋', route: 'dashboard.listings.create', match: ['dashboard.listings.create'] },
     // No "Offers" entry: custom offers live inside the chat thread, so Messages
