@@ -1591,4 +1591,65 @@ class DisputeTest extends TestCase
             $this->assertSame('admin', $notice['role']);
         }
     }
+
+    // ── Settlement when a party has no wallet row ────────────────────
+
+    /**
+     * Wallet rows are only inserted at registration, so an account created any
+     * other way has none — and every WalletService lookup used firstOrFail(). A
+     * refund to such a buyer threw inside its own transaction, rolled the whole
+     * settlement back, and surfaced as a 404 the page did not show: the dispute
+     * stayed open and the button looked broken.
+     *
+     * Every other test here pre-creates both wallets, which is exactly why none of
+     * them caught it. These two delete the buyer's row first.
+     */
+    public function test_a_negotiated_refund_settles_when_the_buyer_has_no_wallet_row(): void
+    {
+        $dispute = $this->disputedOrder();
+        $buyer   = $dispute->order->buyer;
+        $seller  = $dispute->order->seller;
+
+        Wallet::where('user_id', $buyer->id)->delete();
+        $this->assertSame(0, Wallet::where('user_id', $buyer->id)->count());
+
+        $resolution = app(DisputeService::class)->propose(
+            $dispute, $seller, DisputeResolutionType::FullRefund, null, 'Take it all back.',
+        );
+
+        $this->actingAs($buyer)
+            ->post("/dashboard/dispute-proposals/{$resolution->id}/accept")
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        // The wallet was created on demand and credited the full buyer_total…
+        $this->assertSame([self::BUYER_TOTAL, 0], $this->balances($buyer));
+        // …and the seller's hold was still reversed rather than paid out.
+        $this->assertSame([0, 0], $this->balances($seller));
+
+        $fresh = $dispute->fresh();
+        $this->assertSame(DisputeStatus::Refunded, $fresh->status);
+        $this->assertNotNull($resolution->fresh()->executed_at);
+        $this->assertSame(OrderStatus::Refunded, $dispute->order->fresh()->status);
+    }
+
+    public function test_an_admin_refund_settles_when_the_buyer_has_no_wallet_row(): void
+    {
+        $dispute = $this->disputedOrder();
+        $buyer   = $dispute->order->buyer;
+
+        Wallet::where('user_id', $buyer->id)->delete();
+
+        $this->actingAs($this->asRole('super_admin'))
+            ->post("/admin/disputes/{$dispute->id}/full-refund", ['note' => 'Buyer evidence stands.'])
+            ->assertRedirect()
+            ->assertSessionHas('success');
+
+        $this->assertSame([self::BUYER_TOTAL, 0], $this->balances($buyer));
+        $this->assertSame(DisputeStatus::ResolvedBuyer, $dispute->fresh()->status);
+        $this->assertSame(self::BUYER_TOTAL, $dispute->fresh()->resolution_amount);
+
+        // Exactly one wallet row, not one per credit.
+        $this->assertSame(1, Wallet::where('user_id', $buyer->id)->count());
+    }
 }

@@ -17,6 +17,36 @@ use Illuminate\Support\Facades\DB;
 class WalletService
 {
     /**
+     * The caller's wallet row, locked for the rest of the transaction — created
+     * first if it does not exist yet.
+     *
+     * A wallet is an implicit account: every user has one conceptually, but rows
+     * are only inserted at registration (RegisteredUserController), so any account
+     * created another way — seeded, promoted, imported, or predating that code —
+     * had none. Every lookup here used firstOrFail(), so a credit or debit for such
+     * a user threw ModelNotFoundException *inside* its own DB::transaction: the
+     * whole operation rolled back and the caller saw a 404 with no explanation.
+     * That is what stopped dispute refunds from being processed — the settlement
+     * itself was correct, it just could not reach the buyer's balance.
+     *
+     * Creating on demand is safe rather than lenient: wallets.user_id is UNIQUE, so
+     * two concurrent callers cannot end up with two rows, the new row starts at
+     * zero, and every balance rule still applies afterwards — debitAvailable()
+     * still refuses to overdraw a fresh zero-balance wallet.
+     */
+    private function lockWallet(User $user): Wallet
+    {
+        Wallet::firstOrCreate(
+            ['user_id' => $user->id],
+            ['available_balance' => 0, 'pending_balance' => 0, 'currency' => 'BDT'],
+        );
+
+        // Re-read under a lock: firstOrCreate does not take one, and every caller
+        // relies on this row being pinned for the rest of its transaction.
+        return Wallet::where('user_id', $user->id)->lockForUpdate()->firstOrFail();
+    }
+
+    /**
      * Credit the PENDING balance (seller earning lock).
      * Called immediately when an order completes.
      */
@@ -25,7 +55,7 @@ class WalletService
         abort_if($poisha <= 0, 422, 'Credit amount must be positive.');
 
         return DB::transaction(function () use ($user, $poisha, $type, $reference, $description) {
-            $wallet = Wallet::where('user_id', $user->id)->lockForUpdate()->firstOrFail();
+            $wallet = $this->lockWallet($user);
 
             $wallet->increment('pending_balance', $poisha);
 
@@ -40,7 +70,7 @@ class WalletService
     public function releasePending(User $user, int $poisha, ?Model $reference = null, string $description = ''): ?WalletTransaction
     {
         return DB::transaction(function () use ($user, $poisha, $reference, $description) {
-            $wallet = Wallet::where('user_id', $user->id)->lockForUpdate()->firstOrFail();
+            $wallet = $this->lockWallet($user);
 
             // Safety: never release more than is pending
             $safeAmount = min($poisha, $wallet->pending_balance);
@@ -69,7 +99,7 @@ class WalletService
         abort_if($poisha <= 0, 422, 'Reversal amount must be positive.');
 
         return DB::transaction(function () use ($user, $poisha, $reference, $description) {
-            $wallet = Wallet::where('user_id', $user->id)->lockForUpdate()->firstOrFail();
+            $wallet = $this->lockWallet($user);
 
             $safeAmount = min($poisha, $wallet->pending_balance);
             if ($safeAmount <= 0) return null;
@@ -89,7 +119,7 @@ class WalletService
         abort_if($poisha <= 0, 422, 'Debit amount must be positive.');
 
         return DB::transaction(function () use ($user, $poisha, $type, $reference, $description) {
-            $wallet = Wallet::where('user_id', $user->id)->lockForUpdate()->firstOrFail();
+            $wallet = $this->lockWallet($user);
 
             abort_if($wallet->available_balance < $poisha, 422, 'Insufficient available balance.');
 
@@ -107,7 +137,7 @@ class WalletService
         abort_if($poisha <= 0, 422, 'Credit amount must be positive.');
 
         return DB::transaction(function () use ($user, $poisha, $type, $reference, $description) {
-            $wallet = Wallet::where('user_id', $user->id)->lockForUpdate()->firstOrFail();
+            $wallet = $this->lockWallet($user);
             $wallet->increment('available_balance', $poisha);
             return $this->record($wallet, $type, $poisha, $reference, $description);
         });
@@ -119,7 +149,7 @@ class WalletService
     public function adminAdjust(User $user, int $signedPoisha, string $reason, User $admin): WalletTransaction
     {
         return DB::transaction(function () use ($user, $signedPoisha, $reason, $admin) {
-            $wallet = Wallet::where('user_id', $user->id)->lockForUpdate()->firstOrFail();
+            $wallet = $this->lockWallet($user);
 
             if ($signedPoisha > 0) {
                 $wallet->increment('available_balance', $signedPoisha);
