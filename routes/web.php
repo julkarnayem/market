@@ -254,7 +254,6 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/wallets/{wallet}/adjust', [AdminWallet::class, 'adjust'])->name('.wallets.adjust');
         Route::get('/withdrawals', [AdminWithdrawal::class, 'index'])->name('.withdrawals');
         Route::get('/withdrawals/{withdrawal}', [AdminWithdrawal::class, 'show'])->name('.withdrawals.show');
-        Route::post('/withdrawals/{withdrawal}/approve', [AdminWithdrawal::class, 'approve'])->name('.withdrawals.approve');
         Route::post('/withdrawals/{withdrawal}/reject', [AdminWithdrawal::class, 'reject'])->name('.withdrawals.reject');
         Route::post('/withdrawals/{withdrawal}/complete', [AdminWithdrawal::class, 'complete'])->name('.withdrawals.complete');
 

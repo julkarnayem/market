@@ -20,10 +20,10 @@ use Illuminate\Support\Facades\DB;
  *
  * Every state change re-reads the row under lockForUpdate() *inside* the
  * transaction and re-checks the status there. That is what makes each one
- * idempotent: two admins clicking Approve, or a double-submitted Reject, serialize
- * on the lock and the loser finds a status it may no longer act on. Without it the
- * status check ran against a stale read and a second rejection would credit the
- * balance a second time — money out of nothing.
+ * idempotent: two admins clicking Mark-paid, or a double-submitted Reject,
+ * serialize on the lock and the loser finds a status it may no longer act on.
+ * Without it the status check ran against a stale read and a second rejection
+ * would credit the balance a second time — money out of nothing.
  */
 class WithdrawalService
 {
@@ -107,27 +107,6 @@ class WithdrawalService
     }
 
     /**
-     * Admin approves — the payout is cleared to be sent. No money moves: it left
-     * the wallet at request time.
-     */
-    public function approve(Withdrawal $withdrawal, User $admin): void
-    {
-        DB::transaction(function () use ($withdrawal, $admin) {
-            $locked = Withdrawal::whereKey($withdrawal->getKey())->lockForUpdate()->firstOrFail();
-            abort_unless($locked->status === WithdrawalStatus::Pending, 422, 'Withdrawal is not pending.');
-
-            $locked->update([
-                'status'      => WithdrawalStatus::Approved,
-                'approved_by' => $admin->id,
-                'approved_at' => now(),
-            ]);
-            $this->audit->log('withdrawal.approved', $locked);
-        });
-
-        $withdrawal->refresh();
-    }
-
-    /**
      * Admin rejects — the reserved gross returns to the user's available balance,
      * exactly once, with its own ledger entry. The reserve entry is left alone so
      * the trail still shows what was held and when.
@@ -138,7 +117,7 @@ class WithdrawalService
             $locked = Withdrawal::whereKey($withdrawal->getKey())->lockForUpdate()->firstOrFail();
 
             abort_unless(
-                in_array($locked->status, [WithdrawalStatus::Pending, WithdrawalStatus::Approved], true),
+                $locked->status === WithdrawalStatus::Pending,
                 422,
                 'Cannot reject this withdrawal.',
             );
@@ -173,7 +152,7 @@ class WithdrawalService
         DB::transaction(function () use ($withdrawal, $user) {
             $locked = Withdrawal::whereKey($withdrawal->getKey())->lockForUpdate()->firstOrFail();
 
-            // Re-checked under the lock: once staff have approved or rejected it,
+            // Re-checked under the lock: once staff have paid or rejected it,
             // it is no longer the user's to cancel.
             abort_unless($locked->isCancellable(), 422, 'Only a pending withdrawal can be cancelled.');
             abort_unless((int) $locked->user_id === $user->id, 403, 'This is not your withdrawal.');
@@ -195,14 +174,16 @@ class WithdrawalService
     }
 
     /**
-     * Admin marks the payout as sent. The fee is platform revenue, so there is no
-     * further wallet movement — the gross already left at request time.
+     * Admin pays the request out and marks it done in one step. The gross already
+     * left the wallet at request time and the fee is platform revenue, so no
+     * further wallet movement happens here — this only records that the money was
+     * sent, by whom, and (optionally) the provider's transaction reference.
      */
     public function complete(Withdrawal $withdrawal, User $admin, string $externalReference = ''): void
     {
         DB::transaction(function () use ($withdrawal, $admin, $externalReference) {
             $locked = Withdrawal::whereKey($withdrawal->getKey())->lockForUpdate()->firstOrFail();
-            abort_unless($locked->status === WithdrawalStatus::Approved, 422, 'Withdrawal must be approved first.');
+            abort_unless($locked->status === WithdrawalStatus::Pending, 422, 'Only a pending withdrawal can be paid.');
 
             $locked->update([
                 'status'             => WithdrawalStatus::Completed,

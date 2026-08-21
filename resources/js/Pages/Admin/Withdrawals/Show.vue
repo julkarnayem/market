@@ -19,7 +19,6 @@ interface WithdrawalDetail {
     provider: string;
     account: string;
     requested: string;
-    approved_at: string | null;
     rejected_at: string | null;
     cancelled_at: string | null;
     completed_at: string | null;
@@ -32,13 +31,17 @@ const props = defineProps<{
     wallet: { available_formatted: string; pending_formatted: string } | null;
 }>();
 
-// Mirror the Blade @can('withdrawals.approve'): super-admin (role 'admin') or
-// the explicit permission. The action routes re-check this server-side.
+// Show the action block to staff who can act on a payout: super-admin (role
+// 'admin') or the pay / reject permission. The action routes re-check server-side.
 const user = computed(() => usePage().props.auth.user);
-const canApprove = computed(() => {
+const canProcess = computed(() => {
     const u = user.value;
     if (!u) return false;
-    return u.roles.includes('admin') || u.permissions.includes('withdrawals.approve');
+    return (
+        u.roles.includes('admin') ||
+        u.permissions.includes('withdrawals.complete') ||
+        u.permissions.includes('withdrawals.reject')
+    );
 });
 
 /** Detail rows, in Blade order; nullable timestamps/reference render only when set. */
@@ -58,9 +61,8 @@ const rows = computed<DetailRow[]>(() => {
         { label: 'Provider', value: w.provider, tone: 'font-semibold uppercase' },
         { label: 'Account (masked)', value: w.account, tone: 'font-mono' },
         { label: 'Requested', value: w.requested },
-        ...(w.approved_at ? [{ label: 'Approved at', value: w.approved_at }] : []),
         ...(w.rejected_at ? [{ label: 'Rejected at', value: w.rejected_at }] : []),
-        ...(w.completed_at ? [{ label: 'Completed at', value: w.completed_at }] : []),
+        ...(w.completed_at ? [{ label: 'Paid at', value: w.completed_at }] : []),
     ];
 });
 </script>
@@ -77,7 +79,7 @@ const rows = computed<DetailRow[]>(() => {
                 <dl class="grid grid-cols-2 gap-3 text-sm">
                     <div class="rounded-lg bg-slate-50 p-2">
                         <dt class="text-xs text-slate-500">Status</dt>
-                        <dd><StatusBadge :status="withdrawal.status" /></dd>
+                        <dd><StatusBadge :status="withdrawal.status" :label="withdrawal.status_label" /></dd>
                     </div>
                     <div v-for="r in rows" :key="r.label" class="rounded-lg bg-slate-50 p-2">
                         <dt class="text-xs text-slate-500">{{ r.label }}</dt>
@@ -111,7 +113,7 @@ const rows = computed<DetailRow[]>(() => {
 
             <!-- Actions -->
             <WithdrawalActions
-                v-if="canApprove"
+                v-if="canProcess"
                 :id="withdrawal.id"
                 :status="withdrawal.status"
                 layout="card"

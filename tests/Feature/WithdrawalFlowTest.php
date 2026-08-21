@@ -297,7 +297,7 @@ class WithdrawalFlowTest extends TestCase
         $this->assertSame(WithdrawalStatus::Pending, $w->status);
     }
 
-    // ── Admin approve / reject ───────────────────────────────────────
+    // ── Admin pay / reject ───────────────────────────────────────────
 
     private function pendingWithdrawal(User $user): Withdrawal
     {
@@ -306,39 +306,24 @@ class WithdrawalFlowTest extends TestCase
         );
     }
 
-    public function test_an_admin_can_approve_a_pending_withdrawal(): void
+    public function test_an_admin_can_mark_a_pending_withdrawal_paid(): void
     {
-        $user = $this->funded(5000);
-        $w    = $this->pendingWithdrawal($user);
+        $user   = $this->funded(5000);
+        $w      = $this->pendingWithdrawal($user);
         $before = $this->available($user);
 
         $this->actingAs($this->admin())
-            ->post("/admin/withdrawals/{$w->id}/approve")
+            ->post("/admin/withdrawals/{$w->id}/complete", ['external_reference' => 'TRX-1'])
             ->assertRedirect()
             ->assertSessionHas('success');
 
         $fresh = $w->fresh();
-        $this->assertSame(WithdrawalStatus::Approved, $fresh->status);
-        $this->assertNotNull($fresh->approved_at);
-        $this->assertNotNull($fresh->approved_by);
-        // Approval moves no money — the gross left at request time.
+        $this->assertSame(WithdrawalStatus::Completed, $fresh->status);
+        $this->assertNotNull($fresh->processed_at);
+        $this->assertNotNull($fresh->completed_by);
+        $this->assertSame('TRX-1', $fresh->external_reference);
+        // Paying out moves no money now — the gross left at request time.
         $this->assertSame($before, $this->available($user));
-    }
-
-    public function test_approving_twice_does_not_double_process(): void
-    {
-        $user  = $this->funded(5000);
-        $w     = $this->pendingWithdrawal($user);
-        $admin = $this->admin();
-
-        $this->actingAs($admin)->post("/admin/withdrawals/{$w->id}/approve")->assertRedirect();
-        $firstApprovedAt = $w->fresh()->approved_at;
-
-        // A second click finds it no longer pending.
-        $this->actingAs($admin)->post("/admin/withdrawals/{$w->id}/approve")->assertStatus(422);
-
-        $this->assertEquals($firstApprovedAt, $w->fresh()->approved_at);
-        $this->assertSame(WithdrawalStatus::Approved, $w->fresh()->status);
     }
 
     public function test_an_admin_can_reject_and_the_funds_return_once(): void
@@ -395,7 +380,6 @@ class WithdrawalFlowTest extends TestCase
         $w     = $this->pendingWithdrawal($user);
         $admin = $this->admin();
 
-        $this->actingAs($admin)->post("/admin/withdrawals/{$w->id}/approve")->assertRedirect();
         $this->actingAs($admin)->post("/admin/withdrawals/{$w->id}/complete", ['external_reference' => 'TRX-1'])->assertRedirect();
         $this->assertSame(WithdrawalStatus::Completed, $w->fresh()->status);
 
@@ -414,7 +398,6 @@ class WithdrawalFlowTest extends TestCase
         $w     = $this->pendingWithdrawal($user);
         $admin = $this->admin();
 
-        $this->actingAs($admin)->post("/admin/withdrawals/{$w->id}/approve")->assertRedirect();
         $this->actingAs($admin)->post("/admin/withdrawals/{$w->id}/complete", ['external_reference' => 'TRX-1'])->assertRedirect();
         $processedAt = $w->fresh()->processed_at;
 
@@ -454,18 +437,21 @@ class WithdrawalFlowTest extends TestCase
         $this->assertSame(1, WalletTransaction::where('type', TransactionType::WithdrawalReturn->value)->count());
     }
 
-    public function test_an_approved_withdrawal_cannot_be_cancelled_by_the_user(): void
+    public function test_a_paid_withdrawal_cannot_be_cancelled_by_the_user(): void
     {
         $user = $this->funded(5000);
         $w    = $this->pendingWithdrawal($user);
 
-        $this->actingAs($this->admin())->post("/admin/withdrawals/{$w->id}/approve")->assertRedirect();
+        $this->actingAs($this->admin())
+            ->post("/admin/withdrawals/{$w->id}/complete", ['external_reference' => 'TRX-1'])
+            ->assertRedirect();
 
         $this->actingAs($user)
             ->post("/dashboard/withdrawals/{$w->id}/cancel")
             ->assertStatus(422);
 
-        $this->assertSame(WithdrawalStatus::Approved, $w->fresh()->status);
+        $this->assertSame(WithdrawalStatus::Completed, $w->fresh()->status);
+        // Money stays out — it was paid, not returned.
         $this->assertSame(Money::toPoisha(4000), $this->available($user));
     }
 
@@ -494,7 +480,6 @@ class WithdrawalFlowTest extends TestCase
         foreach ([
             ['get',  "/admin/withdrawals"],
             ['get',  "/admin/withdrawals/{$w->id}"],
-            ['post', "/admin/withdrawals/{$w->id}/approve"],
             ['post', "/admin/withdrawals/{$w->id}/reject"],
             ['post', "/admin/withdrawals/{$w->id}/complete"],
         ] as [$verb, $url]) {
@@ -511,7 +496,7 @@ class WithdrawalFlowTest extends TestCase
         $w      = $this->pendingWithdrawal($owner);
         $seller = $this->seller();
 
-        $this->actingAs($seller)->post("/admin/withdrawals/{$w->id}/approve")->assertForbidden();
+        $this->actingAs($seller)->post("/admin/withdrawals/{$w->id}/complete")->assertForbidden();
         $this->actingAs($seller)->post("/admin/withdrawals/{$w->id}/reject", ['reason' => 'x'])->assertForbidden();
 
         $this->assertSame(WithdrawalStatus::Pending, $w->fresh()->status);
@@ -548,9 +533,9 @@ class WithdrawalFlowTest extends TestCase
         $moderator->roles()->attach(Role::where('name', 'moderator')->value('id'));
         $moderator = $moderator->fresh();
         $this->assertTrue($moderator->isAdmin());
-        $this->assertFalse($moderator->hasPermission('withdrawals.approve'));
+        $this->assertFalse($moderator->hasPermission('withdrawals.complete'));
 
-        $this->actingAs($moderator)->post("/admin/withdrawals/{$w->id}/approve")->assertForbidden();
+        $this->actingAs($moderator)->post("/admin/withdrawals/{$w->id}/complete")->assertForbidden();
         $this->actingAs($moderator)->post("/admin/withdrawals/{$w->id}/reject", ['reason' => 'x'])->assertForbidden();
 
         $this->assertSame(WithdrawalStatus::Pending, $w->fresh()->status);
@@ -563,7 +548,6 @@ class WithdrawalFlowTest extends TestCase
         $w     = $this->pendingWithdrawal($user);
         $admin = $this->admin();
 
-        $this->actingAs($admin)->post("/admin/withdrawals/{$w->id}/approve");
         $this->actingAs($admin)->post("/admin/withdrawals/{$w->id}/complete", ['external_reference' => 'TRX-9']);
 
         $this->actingAs($user)

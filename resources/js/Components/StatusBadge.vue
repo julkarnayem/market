@@ -9,7 +9,16 @@
  */
 import { computed } from 'vue';
 
-const props = defineProps<{ status: string | null | undefined }>();
+const props = defineProps<{
+    status: string | null | undefined;
+    /**
+     * Overrides the mapped label while keeping the status's tone + icon. The map
+     * is keyed by raw status value, so some values are shared across domains
+     * (e.g. `completed` is an order that finished AND a withdrawal that was paid).
+     * Pass the server's own status_label here when a domain needs its own wording.
+     */
+    label?: string;
+}>();
 
 type Entry = [tone: string, label: string, icon: string];
 
@@ -87,13 +96,13 @@ const MAP: Record<string, Entry> = {
 
 const resolved = computed<Entry>(() => {
     const s = props.status ?? '';
-    return (
-        MAP[s] ?? [
-            'slate',
-            s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-            '●',
-        ]
-    );
+    const entry: Entry = MAP[s] ?? [
+        'slate',
+        s.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+        '●',
+    ];
+    // Keep the resolved tone + icon; only the wording is overridden.
+    return props.label ? [entry[0], props.label, entry[2]] : entry;
 });
 </script>
 

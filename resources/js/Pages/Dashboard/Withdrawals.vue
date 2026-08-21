@@ -339,7 +339,7 @@ function cancel(w: WithdrawalRow) {
                                     <td class="money font-semibold text-mint-700">{{ w.net_formatted }}</td>
                                     <td class="text-xs">{{ w.method_label }}</td>
                                     <td class="font-mono text-xs">{{ w.masked_number }}</td>
-                                    <td><StatusBadge :status="w.status" /></td>
+                                    <td><StatusBadge :status="w.status" :label="w.status_label" /></td>
                                     <td class="text-xs text-slate-500">{{ w.date }}</td>
                                     <td class="text-xs text-slate-500">{{ w.processed_at ?? '—' }}</td>
                                     <td>
@@ -376,7 +376,7 @@ function cancel(w: WithdrawalRow) {
                                 </p>
                                 <p class="mt-0.5 font-mono text-xs text-slate-400">{{ w.reference }}</p>
                             </div>
-                            <StatusBadge :status="w.status" />
+                            <StatusBadge :status="w.status" :label="w.status_label" />
                         </div>
                         <p v-if="w.status === 'rejected' && w.rejection_reason" class="mt-2 text-xs text-rose-600">
                             Reason: {{ w.rejection_reason }}

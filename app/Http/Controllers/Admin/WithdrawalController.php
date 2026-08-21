@@ -13,7 +13,7 @@ use Inertia\Inertia;
 class WithdrawalController extends Controller
 {
     /** Status options offered by the index filter (a subset of WithdrawalStatus). */
-    private const STATUSES = ['pending', 'approved', 'completed', 'rejected', 'all'];
+    private const STATUSES = ['pending', 'completed', 'rejected', 'cancelled', 'all'];
 
     public function __construct(
         private readonly WithdrawalService $service,
@@ -87,7 +87,6 @@ class WithdrawalController extends Controller
                 'provider'         => $withdrawal->methodLabel(),
                 'account'          => $withdrawal->maskedAccount(),
                 'requested'        => $withdrawal->created_at->format('d M Y, H:i'),
-                'approved_at'      => $withdrawal->approved_at?->format('d M Y, H:i'),
                 'rejected_at'      => $withdrawal->rejected_at?->format('d M Y, H:i'),
                 'cancelled_at'     => $withdrawal->cancelled_at?->format('d M Y, H:i'),
                 'completed_at'     => $withdrawal->processed_at?->format('d M Y, H:i'),
@@ -101,17 +100,10 @@ class WithdrawalController extends Controller
         ]);
     }
 
-    public function approve(Withdrawal $withdrawal)
-    {
-        $this->authorize('withdrawals.approve');
-        $this->service->approve($withdrawal, Auth::user());
-        return back()->with('success', 'Withdrawal approved. Mark as completed once MFS transfer is done.');
-    }
-
     public function reject(Request $request, Withdrawal $withdrawal)
     {
         // Rejecting returns money to a user, so it uses its own permission rather
-        // than borrowing the approve one.
+        // than borrowing the pay-out one.
         $this->authorize('withdrawals.reject');
         $data = $request->validate(['reason' => 'required|string|max:500']);
         $this->service->reject($withdrawal, Auth::user(), $data['reason']);
@@ -123,6 +115,6 @@ class WithdrawalController extends Controller
         $this->authorize('withdrawals.complete');
         $data = $request->validate(['external_reference' => 'nullable|string|max:200']);
         $this->service->complete($withdrawal, Auth::user(), $data['external_reference'] ?? '');
-        return back()->with('success', 'Withdrawal marked as completed.');
+        return back()->with('success', 'Withdrawal marked as paid.');
     }
 }

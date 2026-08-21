@@ -23,9 +23,4 @@ class WithdrawalFactory extends Factory
             'status'       => WithdrawalStatus::Pending,
         ];
     }
-
-    public function approved(): static
-    {
-        return $this->state(fn () => ['status' => WithdrawalStatus::Approved, 'approved_at' => now()]);
-    }
 }

@@ -99,7 +99,7 @@ function applyFilters() {
                         <td class="money font-bold text-emerald-600">{{ w.net_formatted }}</td>
                         <td class="text-xs font-semibold uppercase">{{ w.provider }}</td>
                         <td class="font-mono text-xs">{{ w.account }}</td>
-                        <td><StatusBadge :status="w.status" /></td>
+                        <td><StatusBadge :status="w.status" :label="w.status_label" /></td>
                         <td class="text-xs text-slate-500">{{ w.created }}</td>
                         <td><WithdrawalActions :id="w.id" :status="w.status" /></td>
                     </tr>
@@ -118,7 +118,7 @@ function applyFilters() {
                         <Link :href="w.url" class="font-semibold text-slate-900">{{ w.user_name }}</Link>
                         <p class="text-xs text-slate-500">{{ w.provider }} · {{ w.account }}</p>
                     </div>
-                    <StatusBadge :status="w.status" />
+                    <StatusBadge :status="w.status" :label="w.status_label" />
                 </div>
                 <div class="flex justify-between">
                     <span class="money font-bold text-emerald-600">{{ w.net_formatted }}</span>

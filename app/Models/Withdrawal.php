@@ -15,14 +15,14 @@ class Withdrawal extends Model
         'bank_account_name','bank_account_number','bank_name','bank_branch',
         'status',
         'reviewed_by','reviewed_at','note',
-        'approved_by','approved_at','rejected_at','rejection_reason','cancelled_at',
+        'rejected_at','rejection_reason','cancelled_at',
         'processed_at','completed_by','external_reference',
         'wallet_transaction_id',
     ];
     protected function casts(): array {
         return [
             'amount'=>'integer','fee'=>'integer','net_amount'=>'integer',
-            'reviewed_at'=>'datetime','approved_at'=>'datetime',
+            'reviewed_at'=>'datetime',
             'rejected_at'=>'datetime','cancelled_at'=>'datetime','processed_at'=>'datetime',
             'status'=>WithdrawalStatus::class,
         ];
@@ -30,7 +30,6 @@ class Withdrawal extends Model
 
     public function user(): BelongsTo      { return $this->belongsTo(User::class); }
     public function reviewer(): BelongsTo  { return $this->belongsTo(User::class,'reviewed_by'); }
-    public function approver(): BelongsTo  { return $this->belongsTo(User::class,'approved_by'); }
     public function completer(): BelongsTo { return $this->belongsTo(User::class,'completed_by'); }
 
     /** The buyer-facing handle, so support can be given something to quote. */
