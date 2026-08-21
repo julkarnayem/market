@@ -67,7 +67,7 @@ function submitAdjustment() {
 }
 
 const balanceTiles = computed(() => [
-    { label: 'Available', value: props.wallet.available, tone: 'text-emerald-600 bg-emerald-50' },
+    { label: 'Available', value: props.wallet.available, tone: 'text-mint-600 bg-mint-50' },
     { label: 'Pending', value: props.wallet.pending, tone: 'text-amber-600 bg-amber-50' },
     { label: 'Total', value: props.wallet.total, tone: 'text-slate-900 bg-slate-100' },
 ]);
@@ -117,7 +117,7 @@ const balanceTiles = computed(() => [
                                     </td>
                                     <td
                                         class="money text-sm font-semibold"
-                                        :class="tx.is_credit ? 'text-emerald-600' : 'text-rose-600'"
+                                        :class="tx.is_credit ? 'text-mint-600' : 'text-rose-600'"
                                     >
                                         {{ tx.amount_formatted }}
                                     </td>

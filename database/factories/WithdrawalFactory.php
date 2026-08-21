@@ -19,6 +19,7 @@ class WithdrawalFactory extends Factory
             'currency'     => 'BDT',
             'method'       => 'mfs',
             'mfs_provider' => 'bkash',
+            'method_key'   => 'bkash',
             'mfs_number'   => '01711111111',
             'status'       => WithdrawalStatus::Pending,
         ];

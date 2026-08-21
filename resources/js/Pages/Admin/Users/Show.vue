@@ -74,9 +74,9 @@ function submit(action: 'suspend' | 'restore', data: Record<string, string> = {}
                 <div class="card-p">
                     <h2 class="section-title mb-2">Wallet Summary</h2>
                     <div class="grid grid-cols-2 gap-3 text-sm">
-                        <div class="rounded-lg bg-emerald-50 p-2">
+                        <div class="rounded-lg bg-mint-50 p-2">
                             <p class="text-xs text-slate-500">Available</p>
-                            <p class="money font-bold text-emerald-600">{{ wallet.available_formatted }}</p>
+                            <p class="money font-bold text-mint-600">{{ wallet.available_formatted }}</p>
                         </div>
                         <div class="rounded-lg bg-amber-50 p-2">
                             <p class="text-xs text-slate-500">Pending</p>

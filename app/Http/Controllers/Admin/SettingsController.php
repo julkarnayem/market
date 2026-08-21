@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\Withdrawal;
+use App\Models\WithdrawalMethod;
 use App\Services\SettingsService;
 use App\Support\Money;
+use App\Support\ThemeColors;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 
@@ -32,7 +35,7 @@ class SettingsController extends Controller
     /** Purchasable promotion durations, in days. */
     private const PROMOTION_DAYS = [1, 2, 3, 4, 5];
 
-    public function index(Request $request, SettingsService $settings)
+    public function index(Request $request, SettingsService $settings, ThemeColors $theme)
     {
         // Reading is settings.view — the permission both sidebars gate the nav
         // item on. The Blade authorized settings.manage here, which made its own
@@ -56,6 +59,14 @@ class SettingsController extends Controller
             // BDT, because that is the unit the promotion inputs edit; update()
             // converts back to poisha.
             'promotion_prices' => $this->promotionPrices($settings),
+            // The admin-managed payout-method set. All rows (not just active), so
+            // the card can show what is switched off; usage_count lets the UI
+            // explain why a delete is blocked before the request is even made.
+            'withdrawal_methods' => $this->withdrawalMethods(),
+            // Admin-editable theme palette. current() = stored override or default
+            // per role; theme_defaults drives the per-row "Reset to default".
+            'theme_colors'   => $theme->current(),
+            'theme_defaults' => ThemeColors::DEFAULTS,
             // Mirrors the Blade's @can wrapper: settings.view alone gets a
             // read-only page. update() re-checks, so this only drives the UI.
             'can_manage' => $request->user()->can('settings.manage'),
@@ -97,6 +108,35 @@ class SettingsController extends Controller
         return back()->with('success', 'Settings saved.');
     }
 
+    /**
+     * Persist the 4 admin-editable theme colors. Each is an #RRGGBB hex or blank.
+     * A blank field, or a hex equal to the role's default, forgets the override
+     * so the exact default ramp returns — only a genuine customization is stored
+     * (ThemeColors regenerates the 50–900 scale from it).
+     */
+    public function updateTheme(Request $request, SettingsService $settings)
+    {
+        $this->authorize('settings.manage');
+
+        $rules = [];
+        foreach (array_keys(ThemeColors::DEFAULTS) as $role) {
+            $rules[$role] = ['nullable', 'regex:/^#[0-9a-fA-F]{6}$/'];
+        }
+        $data = $request->validate($rules);
+
+        foreach (ThemeColors::DEFAULTS as $role => $default) {
+            $hex = $data[$role] ?? null;
+
+            if ($hex && strtolower($hex) !== strtolower($default)) {
+                $settings->set("theme_{$role}", strtoupper($hex), 'string', 'theme');
+            } else {
+                $settings->forget("theme_{$role}");
+            }
+        }
+
+        return back()->with('success', 'Theme colors saved.');
+    }
+
     /** @return list<array{days:int,label:string,field:string,bdt:float}> */
     private function promotionPrices(SettingsService $settings): array
     {
@@ -108,5 +148,34 @@ class SettingsController extends Controller
             'field' => "promotion_price_{$day}",
             'bdt'   => Money::toBdt((int) ($stored[$day] ?? 0)),
         ], self::PROMOTION_DAYS);
+    }
+
+    /**
+     * Every payout method, ordered as the user form orders them, each carrying a
+     * usage_count. One grouped query for the counts keeps this off the N+1 path.
+     *
+     * @return list<array{id:int,key:string,label:string,type:string,is_active:bool,sort_order:int,usage_count:int}>
+     */
+    private function withdrawalMethods(): array
+    {
+        $usage = Withdrawal::query()
+            ->selectRaw('method_key, COUNT(*) as total')
+            ->groupBy('method_key')
+            ->pluck('total', 'method_key');
+
+        return WithdrawalMethod::query()
+            ->orderBy('sort_order')
+            ->orderBy('key')
+            ->get()
+            ->map(fn (WithdrawalMethod $method) => [
+                'id'          => $method->id,
+                'key'         => $method->key,
+                'label'       => $method->label,
+                'type'        => $method->type,
+                'is_active'   => $method->is_active,
+                'sort_order'  => $method->sort_order,
+                'usage_count' => (int) ($usage[$method->key] ?? 0),
+            ])
+            ->all();
     }
 }

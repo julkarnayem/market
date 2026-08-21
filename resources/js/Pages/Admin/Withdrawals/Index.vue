@@ -96,7 +96,7 @@ function applyFilters() {
                         </td>
                         <td class="money font-semibold">{{ w.amount_formatted }}</td>
                         <td class="money text-xs text-rose-600">{{ w.fee_formatted }}</td>
-                        <td class="money font-bold text-emerald-600">{{ w.net_formatted }}</td>
+                        <td class="money font-bold text-mint-600">{{ w.net_formatted }}</td>
                         <td class="text-xs font-semibold uppercase">{{ w.provider }}</td>
                         <td class="font-mono text-xs">{{ w.account }}</td>
                         <td><StatusBadge :status="w.status" :label="w.status_label" /></td>
@@ -126,7 +126,7 @@ function applyFilters() {
                     <StatusBadge :status="w.status" :label="w.status_label" />
                 </div>
                 <div class="flex justify-between">
-                    <span class="money font-bold text-emerald-600">{{ w.net_formatted }}</span>
+                    <span class="money font-bold text-mint-600">{{ w.net_formatted }}</span>
                     <span class="text-xs text-slate-500">{{ w.created }}</span>
                 </div>
                 <div class="flex items-center gap-2 border-t border-slate-100 pt-2">

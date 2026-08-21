@@ -1,7 +1,6 @@
 <?php
 namespace App\Models;
 
-use App\Enums\WithdrawalMethod;
 use App\Enums\WithdrawalStatus;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -11,7 +10,7 @@ class Withdrawal extends Model
 {
     protected $fillable = [
         'user_id','client_request_id','amount','fee','net_amount','currency','method',
-        'mfs_provider','mfs_number',
+        'mfs_provider','method_key','mfs_number',
         'bank_account_name','bank_account_number','bank_name','bank_branch',
         'status',
         'reviewed_by','reviewed_at','note',
@@ -36,6 +35,16 @@ class Withdrawal extends Model
         static::creating(function (self $withdrawal) {
             if (empty($withdrawal->reference_token)) {
                 $withdrawal->reference_token = self::generateReferenceToken();
+            }
+
+            // Pin the method used, so a withdrawal stays labellable even if the
+            // method is later renamed or removed. The service sets this
+            // explicitly; a factory or direct create falls back to the provider
+            // slug (mfs) or 'bank'.
+            if (empty($withdrawal->method_key)) {
+                $withdrawal->method_key = $withdrawal->method === 'bank'
+                    ? 'bank'
+                    : (string) $withdrawal->mfs_provider;
             }
         });
     }
@@ -70,22 +79,21 @@ class Withdrawal extends Model
         return $token;
     }
 
-    /**
-     * The method the user picked, recovered from the pair of columns that record
-     * it: `method` says mfs-or-bank, `mfs_provider` says which wallet.
-     */
-    public function methodEnum(): ?WithdrawalMethod
+    /** The stored method's key: method_key when set, else derived for legacy rows. */
+    public function methodKey(): string
     {
-        if ($this->method === 'bank') {
-            return WithdrawalMethod::Bank;
-        }
-
-        return WithdrawalMethod::tryFrom((string) $this->mfs_provider);
+        return (string) ($this->method_key ?: ($this->method === 'bank' ? 'bank' : $this->mfs_provider));
     }
 
+    /**
+     * The method's display label. Resolved from the withdrawal_methods table by
+     * key, so a renamed method shows its new label; if the method has since been
+     * deleted, fall back to a readable string rather than nothing.
+     */
     public function methodLabel(): string
     {
-        return $this->methodEnum()?->label() ?? strtoupper((string) ($this->mfs_provider ?: $this->method));
+        return WithdrawalMethod::labelFor($this->methodKey())
+            ?? ($this->method === 'bank' ? 'Bank transfer' : strtoupper((string) ($this->mfs_provider ?: $this->method)));
     }
 
     /**

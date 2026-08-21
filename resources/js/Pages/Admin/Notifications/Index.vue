@@ -20,9 +20,9 @@ const num = (n: number): string => n.toLocaleString();
                 <p class="mt-1 text-2xl font-bold text-slate-900">{{ num(stats.total) }}</p>
                 <p class="mt-1 text-xs text-brand-600">View all →</p>
             </Link>
-            <div class="card-p bg-emerald-50">
-                <p class="text-xs font-medium text-emerald-700">✓ SMS sent</p>
-                <p class="mt-1 text-2xl font-bold text-emerald-700">{{ num(stats.sent) }}</p>
+            <div class="card-p bg-mint-50">
+                <p class="text-xs font-medium text-mint-700">✓ SMS sent</p>
+                <p class="mt-1 text-2xl font-bold text-mint-700">{{ num(stats.sent) }}</p>
             </div>
             <div class="card-p bg-rose-50">
                 <p class="text-xs font-medium text-rose-700">✕ SMS failed</p>
@@ -36,7 +36,7 @@ const num = (n: number): string => n.toLocaleString();
             <div class="flex items-center gap-3">
                 <span
                     class="h-3 w-3 rounded-full ring-2 ring-offset-1"
-                    :class="provider.enabled ? 'bg-emerald-500 ring-emerald-300' : 'bg-rose-500 ring-rose-300'"
+                    :class="provider.enabled ? 'bg-mint-500 ring-mint-300' : 'bg-rose-500 ring-rose-300'"
                 ></span>
                 <span class="text-sm font-medium text-slate-700">
                     {{ provider.name }} {{ provider.enabled ? 'configured' : 'not configured' }}

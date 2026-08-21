@@ -18,6 +18,13 @@
     {{-- Vite: Vue 3 + Inertia client entry (imports resources/css/app.css) --}}
     @vite(['resources/js/app.ts'])
 
+    {{-- Admin theme-color overrides (App\Support\ThemeColors via AppServiceProvider).
+         After @vite so it wins over the app.css :root defaults by source order;
+         only emitted when an admin has customized a role. CSP allows inline style. --}}
+    @if (!empty($themeCss))
+        <style id="theme-overrides">:root { {!! $themeCss !!} }</style>
+    @endif
+
     {{-- Per-page <title>, meta description, canonical, Open Graph, Twitter Card, JSON-LD
          are injected here by Inertia's <Head> component (SSR-rendered). --}}
     @inertiaHead

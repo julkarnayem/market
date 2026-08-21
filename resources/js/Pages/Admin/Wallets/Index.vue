@@ -61,7 +61,7 @@ function applyFilters() {
                             <p class="font-medium text-slate-900">{{ w.user_name }}</p>
                             <p class="text-xs text-slate-500">{{ w.user_email }}</p>
                         </td>
-                        <td class="money font-semibold text-emerald-600">{{ w.available }}</td>
+                        <td class="money font-semibold text-mint-600">{{ w.available }}</td>
                         <td class="money text-amber-600">{{ w.pending }}</td>
                         <td class="money font-bold">{{ w.total }}</td>
                         <td><Link :href="w.url" class="btn-ghost btn-sm">View</Link></td>
@@ -81,7 +81,7 @@ function applyFilters() {
                     <span class="money font-bold">{{ w.total }}</span>
                 </div>
                 <div class="mt-1 flex justify-between text-xs">
-                    <span class="money text-emerald-600">{{ w.available }}</span>
+                    <span class="money text-mint-600">{{ w.available }}</span>
                     <span class="money text-amber-600">{{ w.pending }}</span>
                 </div>
             </Link>

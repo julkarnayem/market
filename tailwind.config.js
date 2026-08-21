@@ -3,6 +3,21 @@ import typography from '@tailwindcss/typography';
 import animate from 'tailwindcss-animate';
 import defaultTheme from 'tailwindcss/defaultTheme';
 
+/**
+ * A 50–900 scale whose every shade resolves through a CSS variable
+ * (`--c-<token>-<shade>`, space-separated "R G B") instead of a build-time hex.
+ * Defaults live in resources/css/app.css `:root`; App\Support\ThemeColors can
+ * override them at runtime, so brand/mint/amber/rose are admin-editable with no
+ * rebuild. `<alpha-value>` keeps opacity modifiers (`bg-brand-600/20`) working.
+ */
+const varScale = (token) =>
+    Object.fromEntries(
+        [50, 100, 200, 300, 400, 500, 600, 700, 800, 900].map((shade) => [
+            shade,
+            `rgb(var(--c-${token}-${shade}) / <alpha-value>)`,
+        ]),
+    );
+
 /** @type {import('tailwindcss').Config} */
 export default {
     content: [
@@ -19,30 +34,30 @@ export default {
                 mono: ['"JetBrains Mono"', ...defaultTheme.fontFamily.mono],
             },
             colors: {
-                // Primary — emerald brand. 500 = #10B981 (primary), 600 = #059669 (dark), 50 = #ECFDF5 (light).
-                // Repointed from indigo so existing .btn-primary/.badge-brand/.nav-link-active/focus rings
-                // become emerald with no per-view edits during the Blade→Vue coexistence phase.
-                brand: {
-                    50: '#ECFDF5', 100: '#D1FAE5', 200: '#A7F3D0', 300: '#6EE7B7',
-                    400: '#34D399', 500: '#10B981', 600: '#059669', 700: '#047857',
-                    800: '#065F46', 900: '#064E3B',
-                },
-                // Money / earnings / verified accents.
-                mint: {
-                    50: '#ECFDF7', 100: '#D1FAEC', 200: '#A7F3D9', 300: '#6EE7C3',
-                    400: '#34D3AA', 500: '#10B98F', 600: '#059B79', 700: '#047A61',
-                    800: '#065F4E', 900: '#064E40',
-                },
+                // The 4 admin-editable brand-semantic scales. Each shade resolves
+                // through --c-<token>-<shade> (defaults in resources/css/app.css),
+                // so recoloring the site is a settings change, not a rebuild:
+                //   brand → indigo identity (buttons, links, active nav, focus rings)
+                //   mint  → money (balances, payouts, "Paid", verified)
+                //   amber → featured (promotion, urgency, warnings)
+                //   rose  → danger (dispute, delete, errors); defaults to red #DC2626
+                // Overriding the built-in `amber`/`rose` is intentional — in this app
+                // every amber/rose utility already means Featured/Danger.
+                brand: varScale('brand'),
+                mint: varScale('mint'),
+                amber: varScale('amber'),
+                rose: varScale('rose'),
 
                 // shadcn-vue semantic tokens, backed by the CSS variables in
                 // resources/css/app.css. Additive: `brand`/`mint` above stay primary.
                 border: 'hsl(var(--border))',
                 input: 'hsl(var(--input))',
-                ring: 'hsl(var(--ring))',
+                // Track the dynamic brand so shadcn focus rings follow admin recolor.
+                ring: 'rgb(var(--c-brand-600) / <alpha-value>)',
                 background: 'hsl(var(--background))',
                 foreground: 'hsl(var(--foreground))',
                 primary: {
-                    DEFAULT: 'hsl(var(--primary))',
+                    DEFAULT: 'rgb(var(--c-brand-600) / <alpha-value>)',
                     foreground: 'hsl(var(--primary-foreground))',
                 },
                 secondary: {
@@ -50,7 +65,7 @@ export default {
                     foreground: 'hsl(var(--secondary-foreground))',
                 },
                 destructive: {
-                    DEFAULT: 'hsl(var(--destructive))',
+                    DEFAULT: 'rgb(var(--c-rose-600) / <alpha-value>)',
                     foreground: 'hsl(var(--destructive-foreground))',
                 },
                 muted: {

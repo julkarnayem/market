@@ -2,13 +2,13 @@
 namespace Tests\Feature;
 
 use App\Enums\TransactionType;
-use App\Enums\WithdrawalMethod;
 use App\Enums\WithdrawalStatus;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\Wallet;
 use App\Models\WalletTransaction;
 use App\Models\Withdrawal;
+use App\Models\WithdrawalMethod;
 use App\Services\WalletService;
 use App\Services\WithdrawalService;
 use App\Support\Money;
@@ -253,11 +253,11 @@ class WithdrawalFlowTest extends TestCase
         $user    = $this->funded(1000);
         $service = app(WithdrawalService::class);
 
-        $service->request($user, Money::toPoisha(800), WithdrawalMethod::Bkash, ['mfs_number' => '01712345678']);
+        $service->request($user, Money::toPoisha(800), WithdrawalMethod::query()->firstWhere('key', 'bkash'), ['mfs_number' => '01712345678']);
 
         // The second ৳800 has only ৳200 left behind it.
         try {
-            $service->request($user->fresh(), Money::toPoisha(800), WithdrawalMethod::Bkash, ['mfs_number' => '01712345678']);
+            $service->request($user->fresh(), Money::toPoisha(800), WithdrawalMethod::query()->firstWhere('key', 'bkash'), ['mfs_number' => '01712345678']);
             $this->fail('The second withdrawal overdrew the wallet.');
         } catch (HttpException $e) {
             $this->assertSame(422, $e->getStatusCode());
@@ -320,7 +320,7 @@ class WithdrawalFlowTest extends TestCase
     private function pendingWithdrawal(User $user): Withdrawal
     {
         return app(WithdrawalService::class)->request(
-            $user, Money::toPoisha(1000), WithdrawalMethod::Bkash, ['mfs_number' => '01712345678'],
+            $user, Money::toPoisha(1000), WithdrawalMethod::query()->firstWhere('key', 'bkash'), ['mfs_number' => '01712345678'],
         );
     }
 
@@ -595,7 +595,7 @@ class WithdrawalFlowTest extends TestCase
                 ->component('Dashboard/Withdrawals')
                 ->has('withdrawals.data', 1)
                 ->where('withdrawals.data.0.reference', Withdrawal::where('user_id', $mine->id)->first()->reference())
-                ->has('methods', count(WithdrawalMethod::cases()))
+                ->has('methods', WithdrawalMethod::query()->active()->count())
                 ->etc()
             );
     }

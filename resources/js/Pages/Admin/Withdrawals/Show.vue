@@ -68,7 +68,7 @@ const rows = computed<DetailRow[]>(() => {
         { label: 'User', value: w.user_name },
         { label: 'Amount requested', value: w.amount_formatted, money: true },
         { label: 'Withdrawal fee', value: w.fee_formatted, money: true, tone: 'text-rose-600' },
-        { label: 'Net payout', value: w.net_formatted, money: true, tone: 'font-bold text-emerald-600' },
+        { label: 'Net payout', value: w.net_formatted, money: true, tone: 'font-bold text-mint-600' },
         { label: 'Provider', value: w.provider, tone: 'font-semibold uppercase' },
         { label: 'Requested', value: w.requested },
         ...(w.rejected_at ? [{ label: 'Rejected at', value: w.rejected_at }] : []),
@@ -141,9 +141,9 @@ const rows = computed<DetailRow[]>(() => {
             <div v-if="wallet" class="card-p">
                 <h2 class="section-title mb-2">User Wallet Balance</h2>
                 <div class="grid grid-cols-2 gap-3 text-sm">
-                    <div class="rounded-lg bg-emerald-50 p-2">
-                        <p class="text-xs text-emerald-600">Available</p>
-                        <p class="money font-bold text-emerald-600">{{ wallet.available_formatted }}</p>
+                    <div class="rounded-lg bg-mint-50 p-2">
+                        <p class="text-xs text-mint-600">Available</p>
+                        <p class="money font-bold text-mint-600">{{ wallet.available_formatted }}</p>
                     </div>
                     <div class="rounded-lg bg-amber-50 p-2">
                         <p class="text-xs text-amber-600">Pending</p>

@@ -32,8 +32,10 @@ use App\Services\TelegramService;
 use App\Services\MessageService;
 use App\Services\TicketService;
 use App\Services\WithdrawalService;
+use App\Support\ThemeColors;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -149,5 +151,13 @@ class AppServiceProvider extends ServiceProvider
         }
 
         Blade::directive('money', fn($e) => "<?php echo \\App\\Support\\Money::format((int)({$e})); ?>");
+
+        // Share admin-customized theme-color overrides with the root Blade, which
+        // injects them as a <style> so a recolor applies site-wide without a
+        // rebuild. Empty string (nothing customized) → no <style> is emitted.
+        View::composer('app', fn ($view) => $view->with(
+            'themeCss',
+            app(ThemeColors::class)->overridesCss(),
+        ));
     }
 }

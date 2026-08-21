@@ -2,7 +2,7 @@
 
 use App\Http\Controllers\Auth\{AuthenticatedSessionController,EmailVerificationController,NewPasswordController,PasswordResetLinkController,RegisteredUserController};
 use App\Http\Controllers\Admin\{DashboardController as AdminDashboard,FraudController,
-UserController as AdminUser,VerificationController as AdminVerification,ListingController as AdminListing,CategoryController as AdminCategory,WithdrawalController as AdminWithdrawal,SettingsController as AdminSettings,AuditController as AdminAudit,OfferController as AdminOffer,OrderController as AdminOrder,PaymentController as AdminPayment,DisputeController as AdminDispute,WalletController as AdminWallet,PromotionController as AdminPromotion,NotificationController as AdminNotification,TicketController as AdminTicket,StaffController,RoleController,ReportController,MessageReportController,SupportTemplateController};
+UserController as AdminUser,VerificationController as AdminVerification,ListingController as AdminListing,CategoryController as AdminCategory,WithdrawalController as AdminWithdrawal,SettingsController as AdminSettings,AuditController as AdminAudit,OfferController as AdminOffer,OrderController as AdminOrder,PaymentController as AdminPayment,DisputeController as AdminDispute,WalletController as AdminWallet,PromotionController as AdminPromotion,NotificationController as AdminNotification,TicketController as AdminTicket,StaffController,RoleController,ReportController,MessageReportController,SupportTemplateController,WithdrawalMethodController as AdminWithdrawalMethod};
 use App\Http\Controllers\Dashboard\{CustomOfferController,DashboardController,DisputeController,FavoriteController,ListingController,MessageController,NotificationController,OrderController,ProfileController as DashProfile,PromotionController,ReviewController,TicketController,WalletController,WithdrawalController};
 use App\Http\Controllers\{BidController,CheckoutController,ListingContactController,MarketplaceController,PageController,ProfileController,SeoController};
 use Illuminate\Support\Facades\Route;
@@ -311,6 +311,12 @@ Route::middleware(['auth', 'active'])->group(function () {
 
                 Route::get('/settings', [AdminSettings::class, 'index'])->name('.settings');
         Route::patch('/settings', [AdminSettings::class, 'update'])->name('.settings.update');
+        // Admin-editable theme colors (Brand/Money/Featured/Danger).
+        Route::patch('/settings/theme', [AdminSettings::class, 'updateTheme'])->name('.settings.theme.update');
+        // Admin-managed payout methods, edited from the Settings page.
+        Route::post('/settings/withdrawal-methods', [AdminWithdrawalMethod::class, 'store'])->name('.settings.methods.store');
+        Route::patch('/settings/withdrawal-methods/{method}', [AdminWithdrawalMethod::class, 'update'])->name('.settings.methods.update');
+        Route::delete('/settings/withdrawal-methods/{method}', [AdminWithdrawalMethod::class, 'destroy'])->name('.settings.methods.destroy');
         Route::get('/audit-logs', [AdminAudit::class, 'index'])->name('.audit');
         Route::get('/activity-logs', [AdminAudit::class, 'index'])->name('.activity');
     });

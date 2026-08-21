@@ -2,10 +2,10 @@
 namespace App\Services;
 
 use App\Enums\TransactionType;
-use App\Enums\WithdrawalMethod;
 use App\Enums\WithdrawalStatus;
 use App\Models\User;
 use App\Models\Withdrawal;
+use App\Models\WithdrawalMethod;
 use App\Support\Money;
 use Illuminate\Support\Facades\DB;
 
@@ -88,7 +88,9 @@ class WithdrawalService
                 'currency'          => 'BDT',
                 'method'            => $method->storageKey(),
                 // Mobile money records which wallet; a bank transfer leaves it null.
-                'mfs_provider'      => $method->isMobileMoney() ? $method->value : null,
+                'mfs_provider'      => $method->isMobileMoney() ? $method->key : null,
+                // The specific method used, so history stays labellable.
+                'method_key'        => $method->key,
                 'status'            => WithdrawalStatus::Pending,
             ], $accountDetails));
 

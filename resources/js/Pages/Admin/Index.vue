@@ -75,10 +75,10 @@ const needsAttention = computed(() => [
 
         <!-- Revenue + promotions + tickets -->
         <div class="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-            <div class="card-p bg-emerald-50">
-                <p class="text-xs font-medium text-emerald-700">💰 Commission this month</p>
-                <p class="mt-1 text-2xl font-bold text-emerald-700">{{ stats.revenue_month_formatted }}</p>
-                <a :href="route('admin.reports')" class="mt-1 inline-block text-xs text-emerald-700 hover:underline">Full report →</a>
+            <div class="card-p bg-mint-50">
+                <p class="text-xs font-medium text-mint-700">💰 Commission this month</p>
+                <p class="mt-1 text-2xl font-bold text-mint-700">{{ stats.revenue_month_formatted }}</p>
+                <a :href="route('admin.reports')" class="mt-1 inline-block text-xs text-mint-700 hover:underline">Full report →</a>
             </div>
             <div class="card-p bg-amber-50">
                 <p class="text-xs font-medium text-amber-700">⚠ Active promotions</p>

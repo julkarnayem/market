@@ -1,11 +1,11 @@
 <?php
 namespace App\Http\Controllers\Dashboard;
 
-use App\Enums\WithdrawalMethod;
 use App\Enums\WithdrawalStatus;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Dashboard\StoreWithdrawalRequest;
 use App\Models\Withdrawal;
+use App\Models\WithdrawalMethod;
 use App\Services\SettingsService;
 use App\Services\WithdrawalService;
 use App\Support\Money;
@@ -51,8 +51,8 @@ class WithdrawalController extends Controller
             'canWithdraw'        => $available >= $minPoisha,
             'maxBdt'             => Money::toBdt($available),
             'totalWithdrawnFormatted' => Money::format($totalWithdrawn),
-            // Drives the method selector; the same enum backs the request rules,
-            // so the form can never offer a method validation would reject.
+            // Drives the method selector; the same active rows back the request
+            // rules, so the form can never offer a method validation would reject.
             'methods'            => WithdrawalMethod::options(),
             'withdrawals'        => $user->withdrawals()->latest()->paginate(15)
                 ->through(fn (Withdrawal $w) => [
@@ -78,7 +78,8 @@ class WithdrawalController extends Controller
 
     public function store(StoreWithdrawalRequest $request)
     {
-        $method = WithdrawalMethod::from($request->validated('method'));
+        // The request already validated the method is active; resolve the row.
+        $method = $request->resolvedMethod();
 
         // Only the amount and the account fields come from the request; the user
         // is the authenticated one and the balance is the service's business.

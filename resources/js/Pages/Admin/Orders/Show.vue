@@ -76,7 +76,7 @@ defineProps<{
                         </div>
                         <div class="rounded-lg bg-slate-50 p-2">
                             <dt class="text-xs text-slate-500">Seller earning</dt>
-                            <dd class="money font-bold text-emerald-600">{{ order.seller_earning }}</dd>
+                            <dd class="money font-bold text-mint-600">{{ order.seller_earning }}</dd>
                         </div>
                         <div class="rounded-lg bg-slate-50 p-2">
                             <dt class="text-xs text-slate-500">Platform commission</dt>

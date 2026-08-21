@@ -37,6 +37,13 @@ class SettingsService
         Cache::forget(self::CACHE_KEY);
     }
 
+    /** Drop an override so get()'s config/default fallback applies again. */
+    public function forget(string $key): void
+    {
+        Setting::query()->where('key', $key)->delete();
+        Cache::forget(self::CACHE_KEY);
+    }
+
     /** Booleans are stored as '1'/'0' — a raw (string) false would persist ''. */
     private function encode(mixed $value): string
     {

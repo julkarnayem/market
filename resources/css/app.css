@@ -10,14 +10,64 @@
     :root {
         color-scheme: light;
 
+        /* ── Dynamic theme palette ───────────────────────────────────────
+           Default channels (space-separated "R G B") for the 4 admin-editable
+           brand-semantic scales. tailwind.config.js points `brand`/`mint`/
+           `amber`/`rose` at rgb(var(--c-<token>-<shade>) / <alpha-value>), so
+           these ARE the live colors. App\Support\ThemeColors re-emits a subset
+           in a <style> injected by app.blade.php when an admin customizes a
+           role — otherwise these hand-tuned defaults stand. Danger (`rose`)
+           defaults to Tailwind *red* (#DC2626 at 600), the locked Danger hue. */
+        --c-brand-50: 238 242 255;
+        --c-brand-100: 224 231 255;
+        --c-brand-200: 199 210 254;
+        --c-brand-300: 165 180 252;
+        --c-brand-400: 129 140 248;
+        --c-brand-500: 99 102 241;
+        --c-brand-600: 79 70 229;
+        --c-brand-700: 67 56 202;
+        --c-brand-800: 55 48 163;
+        --c-brand-900: 49 46 129;
+        --c-mint-50: 240 253 244;
+        --c-mint-100: 220 252 231;
+        --c-mint-200: 187 247 208;
+        --c-mint-300: 134 239 172;
+        --c-mint-400: 74 222 128;
+        --c-mint-500: 34 197 94;
+        --c-mint-600: 22 163 74;
+        --c-mint-700: 21 128 61;
+        --c-mint-800: 22 101 52;
+        --c-mint-900: 20 83 45;
+        --c-amber-50: 255 251 235;
+        --c-amber-100: 254 243 199;
+        --c-amber-200: 253 230 138;
+        --c-amber-300: 252 211 77;
+        --c-amber-400: 251 191 36;
+        --c-amber-500: 245 158 11;
+        --c-amber-600: 217 119 6;
+        --c-amber-700: 180 83 9;
+        --c-amber-800: 146 64 14;
+        --c-amber-900: 120 53 15;
+        --c-rose-50: 254 242 242;
+        --c-rose-100: 254 226 226;
+        --c-rose-200: 254 202 202;
+        --c-rose-300: 252 165 165;
+        --c-rose-400: 248 113 113;
+        --c-rose-500: 239 68 68;
+        --c-rose-600: 220 38 38;
+        --c-rose-700: 185 28 28;
+        --c-rose-800: 153 27 27;
+        --c-rose-900: 127 29 29;
+
         --background: 0 0% 100%;
         --foreground: 222.2 84% 4.9%;
         --card: 0 0% 100%;
         --card-foreground: 222.2 84% 4.9%;
         --popover: 0 0% 100%;
         --popover-foreground: 222.2 84% 4.9%;
-        /* Primary tracks the emerald brand (--brand #10B981 = 160 84% 39%). */
-        --primary: 160 84% 39%;
+        /* Primary tracks the indigo brand at 600 (#4F46E5), which keeps white
+           text AA-compliant on primary surfaces. */
+        --primary: 243 75% 59%;
         --primary-foreground: 0 0% 100%;
         --secondary: 210 40% 96.1%;
         --secondary-foreground: 222.2 47.4% 11.2%;
@@ -29,7 +79,7 @@
         --destructive-foreground: 210 40% 98%;
         --border: 214.3 31.8% 91.4%;
         --input: 214.3 31.8% 91.4%;
-        --ring: 160 84% 39%;
+        --ring: 243 75% 59%;
         --radius: 0.5rem;
     }
     html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
