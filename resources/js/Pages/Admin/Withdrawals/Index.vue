@@ -10,14 +10,19 @@ import type { Paginated } from '@/types';
 /** One withdrawal row — whitelisted by Admin\WithdrawalController::index(). */
 interface WithdrawalRow {
     id: number;
+    /** Buyer-facing handle, e.g. WD-10007. */
+    reference: string;
     user_name: string;
     user_email: string;
+    /** Which side of the marketplace the balance came from. */
+    user_role: string;
     amount_formatted: string;
     fee_formatted: string;
     net_formatted: string;
     provider: string;
     account: string;
     status: string;
+    status_label: string;
     created: string;
     url: string;
 }
@@ -81,12 +86,13 @@ function applyFilters() {
                     <tr v-for="w in withdrawals.data" :key="w.id">
                         <td>
                             <Link :href="w.url" class="font-mono text-xs text-slate-500 hover:text-brand-600">
-                                #{{ w.id }}
+                                {{ w.reference }}
                             </Link>
                         </td>
                         <td>
                             <p class="text-sm font-medium text-slate-900">{{ w.user_name }}</p>
                             <p class="text-xs text-slate-500">{{ w.user_email }}</p>
+                            <p class="text-xs font-semibold text-brand-600">{{ w.user_role }}</p>
                         </td>
                         <td class="money font-semibold">{{ w.amount_formatted }}</td>
                         <td class="money text-xs text-rose-600">{{ w.fee_formatted }}</td>

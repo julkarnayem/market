@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Dashboard;
 use App\Enums\DisputeReason;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
-use App\Models\Review;
 use App\Services\DisputeService;
 use App\Services\OrderService;
 use App\Support\Money;
@@ -31,7 +30,9 @@ class OrderController extends Controller
 
         if ($tab !== 'all') $query->where('status', $tab);
 
-        $orders = $query->with(['asset.coverImage','buyer','seller'])->latest()->paginate(15)->withQueryString();
+        // `review` rides along so each row can show its review state without a
+        // query per order; it is only ever read on the buyer tab.
+        $orders = $query->with(['asset.coverImage','buyer','seller','review'])->latest()->paginate(15)->withQueryString();
 
         return Inertia::render('Dashboard/Orders/Index', [
             'role'   => $role,
@@ -46,6 +47,9 @@ class OrderController extends Controller
                 'status'          => $o->status->value,
                 'payment_status'  => $o->payment_status,
                 'date'            => $o->created_at->format('d M Y'),
+                // Only the buyer reviews, so the seller tab never offers it.
+                'can_be_reviewed' => $role === 'buyer' && $o->status->canBeReviewed(),
+                'review_rating'   => $o->review ? (int) $o->review->rating : null,
             ]),
         ]);
     }
@@ -54,7 +58,7 @@ class OrderController extends Controller
     {
         $this->authorize('view', $order);
         $order->load(['asset.coverImage','asset.category','buyer','seller','statusHistory',
-                      'delivery','latestPayment','conversation.messages','dispute']);
+                      'delivery','latestPayment','conversation.messages','dispute','review']);
         $userId   = Auth::id();
         $isBuyer  = $order->buyer_user_id === $userId;
         $isSeller = $order->seller_user_id === $userId;
@@ -83,6 +87,10 @@ class OrderController extends Controller
                 'earning_available_at'     => $order->seller_earning_available_at?->format('d M Y, H:i'),
                 'can_be_delivered'         => $order->status->canBeDelivered(),
                 'can_be_completed'         => $order->status->canBeCompleted(),
+                // Delivered *or* Completed — the review action used to be nested in
+                // the "complete order" card, so it vanished the moment the buyer
+                // completed and 403'd for the whole window before that.
+                'can_be_reviewed'          => $order->status->canBeReviewed(),
                 'can_open_dispute'         => $order->status->canOpenDispute(),
                 'auto_complete_human'      => $order->auto_complete_at?->diffForHumans(),
             ],
@@ -115,7 +123,14 @@ class OrderController extends Controller
             'payment' => $order->latestPayment ? [
                 'paid_at_full' => $order->paid_at?->format('d M Y, H:i'),
             ] : null,
-            'alreadyReviewed' => Review::where('order_id', $order->id)->exists(),
+            'alreadyReviewed' => $order->review !== null,
+            // The rating already given, so the page can show "Reviewed ★ 4"
+            // instead of an inert button.
+            'myReview' => $order->review ? [
+                'rating'  => (int) $order->review->rating,
+                'comment' => $order->review->comment,
+                'at'      => $order->review->created_at?->format('d M Y'),
+            ] : null,
             // The current dispute, if any. Order::dispute() is latestOfMany, so
             // this is the live one rather than an arbitrary historical row — the
             // page links to its thread instead of offering to open another.

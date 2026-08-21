@@ -104,6 +104,8 @@ class User extends Authenticatable implements MustVerifyEmail
     }
     public function auditLogs(): HasMany     { return $this->hasMany(AuditLog::class, 'user_id'); }
     public function reviewsReceived(): HasMany { return $this->hasMany(Review::class, 'seller_id'); }
+    /** Reviews this user wrote as a buyer. */
+    public function reviewsWritten(): HasMany { return $this->hasMany(Review::class, 'reviewer_id'); }
     public function reviewsGiven(): HasMany    { return $this->hasMany(Review::class, 'reviewer_id'); }
     public function verifications(): HasMany { return $this->hasMany(SellerVerification::class)->orderBy('attempt_number'); }
 }

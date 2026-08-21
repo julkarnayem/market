@@ -313,10 +313,14 @@ class InertiaMigrationTest extends TestCase
     /**
      * Admin/Withdrawals/Index.vue reads a whitelisted `withdrawals` paginator,
      * the echoed `filters` (status defaults to 'pending') and a `statuses` list.
+     *
+     * Authorizes `withdrawals.view` — listing payouts is a permission, not merely
+     * staff access — so this needs makeSuperAdmin(); makeAdmin()'s uniquely-named
+     * role carries no permissions.
      */
     public function test_admin_withdrawals_index_renders_the_filterable_list(): void
     {
-        $this->actingAs($this->makeAdmin())
+        $this->actingAs($this->makeSuperAdmin())
             ->get('/admin/withdrawals?status=rejected&q=jane')
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page

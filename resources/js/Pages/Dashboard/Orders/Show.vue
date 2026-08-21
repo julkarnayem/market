@@ -27,6 +27,8 @@ interface OrderData {
     earning_available_at: string | null;
     can_be_delivered: boolean;
     can_be_completed: boolean;
+    /** Delivered or Completed — when the buyer may write a review. */
+    can_be_reviewed: boolean;
     can_open_dispute: boolean;
     auto_complete_human: string | null;
 }
@@ -56,6 +58,8 @@ const props = defineProps<{
     participants: Participant[];
     payment: { paid_at_full: string | null } | null;
     alreadyReviewed: boolean;
+    /** The buyer's own review, once written — drives the "Reviewed ★ n" state. */
+    myReview: { rating: number; comment: string | null; at: string | null } | null;
     /** Null until someone opens one. Both parties get the link, not just the buyer. */
     dispute: DisputeRef | null;
 }>();
@@ -277,29 +281,37 @@ function completeOrder() {
                             </button>
                         </form>
                         <p class="mt-2 text-xs text-slate-500">Auto-completes {{ order.auto_complete_human }}</p>
+                    </div>
 
-                        <!-- Leave a review -->
+                    <!--
+                        Its own card, gated on can_be_reviewed rather than
+                        can_be_completed: reviewing stays available after the buyer
+                        completes the order, where it used to disappear.
+                    -->
+                    <div v-if="order.can_be_reviewed" class="card-p">
+                        <h2 class="section-title mb-2">Your review</h2>
                         <div
-                            v-if="alreadyReviewed"
-                            class="mt-2 flex items-center gap-2 text-sm font-medium text-mint-600"
+                            v-if="myReview"
+                            class="flex items-center justify-between gap-2 rounded-lg bg-mint-50 px-3 py-2"
                         >
-                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2.5"
-                                    d="M5 13l4 4L19 7"
-                                />
-                            </svg>
-                            Review submitted
+                            <span class="text-sm font-semibold text-mint-700">
+                                Reviewed
+                                <span class="text-amber-500">{{ '★'.repeat(myReview.rating) }}</span>
+                                {{ myReview.rating }}/5
+                            </span>
+                            <span class="text-xs text-slate-500">{{ myReview.at }}</span>
                         </div>
-                        <Link
-                            v-else
-                            :href="route('dashboard.orders.review', order.id)"
-                            class="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border-2 border-mint-500 py-2 text-sm font-semibold text-mint-600 hover:bg-mint-50"
-                        >
-                            ⭐ Leave a Review
-                        </Link>
+                        <template v-else>
+                            <Link
+                                :href="route('dashboard.orders.review', order.id)"
+                                class="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-mint-500 py-2 text-sm font-semibold text-mint-600 hover:bg-mint-50"
+                            >
+                                ⭐ Write Review
+                            </Link>
+                            <p class="mt-2 text-xs text-slate-500">
+                                Rate {{ order.asset_title }} and the seller.
+                            </p>
+                        </template>
                     </div>
 
                     <!-- Only offer to open one when there isn't one already. -->

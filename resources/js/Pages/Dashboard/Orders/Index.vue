@@ -17,6 +17,10 @@ interface OrderRow {
     status: string;
     payment_status: string;
     date: string;
+    /** Buyer view only: the order reached a state where a review is allowed. */
+    can_be_reviewed: boolean;
+    /** The rating already given, or null if not reviewed yet. */
+    review_rating: number | null;
 }
 
 const props = defineProps<{
@@ -111,9 +115,27 @@ const STATUSES = [
                             <td><StatusBadge :status="o.payment_status" /></td>
                             <td class="text-xs text-slate-500">{{ o.date }}</td>
                             <td>
-                                <Link :href="route('dashboard.orders.show', o.id)" class="btn-ghost btn-sm">
-                                    View
-                                </Link>
+                                <div class="flex items-center gap-1">
+                                    <Link :href="route('dashboard.orders.show', o.id)" class="btn-ghost btn-sm">
+                                        View
+                                    </Link>
+                                    <!-- Delivered purchases get the action inline; a
+                                         reviewed one shows the rating instead. -->
+                                    <span
+                                        v-if="o.can_be_reviewed && o.review_rating !== null"
+                                        class="whitespace-nowrap text-xs font-semibold text-mint-600"
+                                        :title="`You rated this ${o.review_rating}/5`"
+                                    >
+                                        ★ {{ o.review_rating }}
+                                    </span>
+                                    <Link
+                                        v-else-if="o.can_be_reviewed"
+                                        :href="route('dashboard.orders.review', o.id)"
+                                        class="btn-ghost btn-sm whitespace-nowrap text-mint-600"
+                                    >
+                                        ⭐ Review
+                                    </Link>
+                                </div>
                             </td>
                         </tr>
                     </tbody>
@@ -139,6 +161,12 @@ const STATUSES = [
                         <span class="text-slate-500">{{ o.date }}</span>
                         <span class="money font-bold text-slate-900">{{ o.total_formatted }}</span>
                     </div>
+                    <!-- A badge, not a link: this card is already an anchor, and
+                         the Write Review button lives on the order it opens. -->
+                    <p v-if="o.can_be_reviewed" class="mt-2 text-xs font-semibold text-mint-600">
+                        <template v-if="o.review_rating !== null">★ {{ o.review_rating }} · Reviewed</template>
+                        <template v-else>⭐ Write a review</template>
+                    </p>
                 </Link>
             </div>
 

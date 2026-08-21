@@ -14,6 +14,7 @@ use App\Models\Order;
 use App\Models\User;
 use App\Services\BidService;
 use App\Services\ConversationService;
+use App\Services\DisputeService;
 use App\Services\ListingService;
 use App\Services\OfferService;
 use App\Services\OrderService;
@@ -468,5 +469,175 @@ class ListingInventoryTest extends TestCase
             'price_bdt'      => 5000,
             'inventory_type' => 'single',
         ], []);
+    }
+
+    // ── Availability after a refund ───────────────────────────────────
+
+    /** A staff user who can decide disputes. */
+    private function staff(): User
+    {
+        $user = User::factory()->create();
+        $user->roles()->attach(\App\Models\Role::where('name', 'admin')->value('id'));
+
+        return $user->fresh();
+    }
+
+    /**
+     * The real admin refund path: the buyer opens a dispute, staff decide a full
+     * refund. That is the only place an order becomes Refunded.
+     */
+    private function refundByAdmin(Order $order): void
+    {
+        $dispute = app(DisputeService::class)->open(
+            $order->fresh(),
+            $order->buyer,
+            \App\Enums\DisputeReason::NotWorking,
+            'The asset did not work after handover, requesting a refund.',
+        );
+
+        app(DisputeService::class)->resolveFullRefund($dispute, $this->staff(), 'Buyer evidence stands.');
+    }
+
+    /**
+     * Test 1 — the reported bug. Stock is taken at payment and was never given
+     * back, so a fully refunded listing stayed sold_out forever even though
+     * nothing was holding it.
+     */
+    public function test_refunding_the_only_sale_puts_the_listing_back_on_the_market(): void
+    {
+        $seller  = $this->seller();
+        $buyer   = $this->buyer();
+        $listing = $this->listing($seller, InventoryType::Single, 5000);
+
+        $order = $this->purchase($buyer, $listing);
+
+        // Sold: the single unit is held by a live sale.
+        $sold = $listing->fresh();
+        $this->assertSame(AssetStatus::SoldOut, $sold->status);
+        $this->assertSame(0, (int) $sold->available_quantity);
+        $this->assertSame(1, (int) $sold->sold_quantity);
+        $this->assertTrue($sold->isSoldOut());
+
+        $this->refundByAdmin($order);
+
+        // Refunded and nothing else holds it, so it is available again.
+        $free = $listing->fresh();
+        $this->assertSame(OrderStatus::Refunded, $order->fresh()->status);
+        $this->assertSame(AssetStatus::Published, $free->status);
+        $this->assertSame(1, (int) $free->available_quantity);
+        $this->assertSame(0, (int) $free->sold_quantity);
+        $this->assertFalse($free->isSoldOut());
+        $this->assertTrue($free->isAvailableForPurchase());
+    }
+
+    /**
+     * Test 2 — the rule that stops this being "every refund frees the listing".
+     * A refunded order sitting alongside a live one must not free anything.
+     */
+    public function test_a_refund_does_not_free_a_listing_another_sale_still_holds(): void
+    {
+        $seller  = $this->seller();
+        $first   = $this->buyer();
+        $second  = $this->buyer();
+        $listing = $this->listing($seller, InventoryType::Single, 5000);
+
+        // A buys, is refunded, so the listing returns to the market…
+        $orderA = $this->purchase($first, $listing);
+        $this->refundByAdmin($orderA);
+        $this->assertSame(AssetStatus::Published, $listing->fresh()->status);
+
+        // …then B buys it. Order A = Refunded, Order B = live.
+        $orderB = $this->purchase($second, $listing);
+
+        $held = $listing->fresh();
+        $this->assertSame(OrderStatus::Refunded, $orderA->fresh()->status);
+        $this->assertTrue($orderB->fresh()->status->countsAsSale());
+        $this->assertSame(AssetStatus::SoldOut, $held->status);
+        $this->assertSame(0, (int) $held->available_quantity);
+        // Only B counts, so the sold counter is 1 and not 2.
+        $this->assertSame(1, (int) $held->sold_quantity);
+        $this->assertTrue($held->isSoldOut());
+    }
+
+    /** Multi-unit stock frees exactly the refunded unit, not the whole listing. */
+    public function test_refunding_one_unit_of_a_multi_unit_listing_frees_only_that_unit(): void
+    {
+        $seller  = $this->seller();
+        $listing = $this->listing($seller, InventoryType::Multiple, 5000, quantity: 2);
+
+        $orderA = $this->purchase($this->buyer(), $listing);
+        $orderB = $this->purchase($this->buyer(), $listing);
+
+        $soldOut = $listing->fresh();
+        $this->assertSame(AssetStatus::SoldOut, $soldOut->status);
+        $this->assertSame(0, (int) $soldOut->available_quantity);
+
+        $this->refundByAdmin($orderA);
+
+        $partial = $listing->fresh();
+        $this->assertSame(AssetStatus::Published, $partial->status);
+        $this->assertSame(1, (int) $partial->available_quantity);   // A's unit back
+        $this->assertSame(1, (int) $partial->sold_quantity);        // B still holds one
+        $this->assertFalse($partial->isSoldOut());
+    }
+
+    /**
+     * Test 3 — the ordinary path is untouched: a live sale, and a completed one,
+     * both keep the listing sold.
+     */
+    public function test_a_normal_sale_still_marks_the_listing_sold(): void
+    {
+        $seller  = $this->seller();
+        $buyer   = $this->buyer();
+        $listing = $this->listing($seller, InventoryType::Single, 5000);
+
+        $order = $this->purchase($buyer, $listing);
+        $this->assertSame(AssetStatus::SoldOut, $listing->fresh()->status);
+
+        // Deliver and complete — the sale is finished, not undone.
+        app(OrderService::class)->deliver($order->fresh(), $seller, 'Credentials sent.');
+        app(OrderService::class)->complete($order->fresh(), $buyer);
+
+        $this->assertSame(OrderStatus::Completed, $order->fresh()->status);
+        $done = $listing->fresh();
+        $this->assertSame(AssetStatus::SoldOut, $done->status);
+        $this->assertSame(0, (int) $done->available_quantity);
+        $this->assertSame(1, (int) $done->sold_quantity);
+        $this->assertFalse($done->isAvailableForPurchase());
+    }
+
+    /** An unlimited listing is never sold out, so a refund cannot change that. */
+    public function test_an_unlimited_listing_is_unaffected_by_a_refund(): void
+    {
+        $seller  = $this->seller();
+        $listing = $this->listing($seller, InventoryType::Unlimited, 5000);
+
+        $order = $this->purchase($this->buyer(), $listing);
+        $this->assertSame(AssetStatus::Published, $listing->fresh()->status);
+        $this->assertFalse($listing->fresh()->isSoldOut());
+
+        $this->refundByAdmin($order);
+
+        $after = $listing->fresh();
+        $this->assertSame(AssetStatus::Published, $after->status);
+        $this->assertFalse($after->isSoldOut());
+        // The sold counter drops, since that sale was undone.
+        $this->assertSame(0, (int) $after->sold_quantity);
+    }
+
+    /** A paused listing must not be published by a refund. */
+    public function test_a_refund_does_not_republish_a_listing_the_seller_paused(): void
+    {
+        $seller  = $this->seller();
+        $listing = $this->listing($seller, InventoryType::Multiple, 5000, quantity: 2);
+
+        $order = $this->purchase($this->buyer(), $listing);
+        $listing->fresh()->update(['status' => AssetStatus::Paused]);
+
+        $this->refundByAdmin($order);
+
+        $after = $listing->fresh();
+        $this->assertSame(AssetStatus::Paused, $after->status);   // still the seller's call
+        $this->assertSame(2, (int) $after->available_quantity);   // stock still restored
     }
 }

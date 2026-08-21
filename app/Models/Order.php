@@ -53,6 +53,10 @@ class Order extends Model
     public function payments(): HasMany       { return $this->hasMany(Payment::class); }
     public function latestPayment(): HasOne   { return $this->hasOne(Payment::class)->latest(); }
     public function delivery(): HasOne        { return $this->hasOne(OrderDelivery::class); }
+    // At most one, enforced by the unique index on reviews.order_id: an order is
+    // one buyer and one asset, so that single row *is* "this buyer reviewed this
+    // product for this order". Eager-load it rather than probing per row.
+    public function review(): HasOne          { return $this->hasOne(Review::class); }
 
     public function isOwnedByBuyer(int $userId): bool  { return $this->buyer_user_id === $userId; }
     public function isOwnedBySeller(int $userId): bool { return $this->seller_user_id === $userId; }

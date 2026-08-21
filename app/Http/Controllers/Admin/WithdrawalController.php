@@ -22,6 +22,10 @@ class WithdrawalController extends Controller
 
     public function index()
     {
+        // The admin middleware only proves this is staff; listing payouts is its
+        // own permission, and show() already required it.
+        $this->authorize('withdrawals.view');
+
         $status = request('status', 'pending');
 
         $withdrawals = Withdrawal::query()
@@ -34,14 +38,20 @@ class WithdrawalController extends Controller
         return Inertia::render('Admin/Withdrawals/Index', [
             'withdrawals' => $withdrawals->through(fn (Withdrawal $w) => [
                 'id'             => $w->id,
+                'reference'      => $w->reference(),
                 'user_name'      => $w->user?->name ?? '—',
                 'user_email'     => $w->user?->email ?? '',
+                // Which side of the marketplace the money came from, so staff can
+                // see at a glance whether this is seller earnings or a buyer refund.
+                'user_role'      => $w->user === null ? '—'
+                    : ($w->user->sales()->exists() ? 'Seller' : 'Buyer'),
                 'amount_formatted' => Money::format((int) $w->amount),
                 'fee_formatted'  => Money::format((int) $w->fee),
                 'net_formatted'  => Money::format((int) $w->net_amount),
-                'provider'       => strtoupper((string) $w->mfs_provider),
-                'account'        => $w->maskedNumber(),
+                'provider'       => $w->methodLabel(),
+                'account'        => $w->maskedAccount(),
                 'status'         => $w->status->value,
+                'status_label'   => $w->status->label(),
                 'created'        => $w->created_at->format('d M Y'),
                 'url'            => route('admin.withdrawals.show', $w),
             ]),
@@ -67,16 +77,19 @@ class WithdrawalController extends Controller
         return Inertia::render('Admin/Withdrawals/Show', [
             'withdrawal' => [
                 'id'               => $withdrawal->id,
+                'reference'        => $withdrawal->reference(),
                 'user_name'        => $withdrawal->user?->name ?? '—',
                 'status'           => $withdrawal->status->value,
+                'status_label'     => $withdrawal->status->label(),
                 'amount_formatted' => Money::format((int) $withdrawal->amount),
                 'fee_formatted'    => Money::format((int) $withdrawal->fee),
                 'net_formatted'    => Money::format((int) $withdrawal->net_amount),
-                'provider'         => strtoupper((string) $withdrawal->mfs_provider),
-                'account'          => $withdrawal->maskedNumber(),
+                'provider'         => $withdrawal->methodLabel(),
+                'account'          => $withdrawal->maskedAccount(),
                 'requested'        => $withdrawal->created_at->format('d M Y, H:i'),
                 'approved_at'      => $withdrawal->approved_at?->format('d M Y, H:i'),
                 'rejected_at'      => $withdrawal->rejected_at?->format('d M Y, H:i'),
+                'cancelled_at'     => $withdrawal->cancelled_at?->format('d M Y, H:i'),
                 'completed_at'     => $withdrawal->processed_at?->format('d M Y, H:i'),
                 'external_reference' => $withdrawal->external_reference,
                 'rejection_reason' => $withdrawal->rejection_reason,
@@ -97,7 +110,9 @@ class WithdrawalController extends Controller
 
     public function reject(Request $request, Withdrawal $withdrawal)
     {
-        $this->authorize('withdrawals.approve');
+        // Rejecting returns money to a user, so it uses its own permission rather
+        // than borrowing the approve one.
+        $this->authorize('withdrawals.reject');
         $data = $request->validate(['reason' => 'required|string|max:500']);
         $this->service->reject($withdrawal, Auth::user(), $data['reason']);
         return back()->with('success', 'Withdrawal rejected. Funds returned to user wallet.');
@@ -105,7 +120,7 @@ class WithdrawalController extends Controller
 
     public function complete(Request $request, Withdrawal $withdrawal)
     {
-        $this->authorize('withdrawals.approve');
+        $this->authorize('withdrawals.complete');
         $data = $request->validate(['external_reference' => 'nullable|string|max:200']);
         $this->service->complete($withdrawal, Auth::user(), $data['external_reference'] ?? '');
         return back()->with('success', 'Withdrawal marked as completed.');

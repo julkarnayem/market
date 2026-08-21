@@ -767,6 +767,11 @@ class DisputeService
                     'status'           => OrderStatus::Refunded,
                     'earning_released' => false,
                 ]);
+                // The sale is undone, so the unit it was holding goes back to the
+                // listing — but only the listing's own orders decide whether that
+                // frees it: another live sale keeps it sold out. Money movement
+                // above is untouched; this is purely the stock side.
+                $order->asset?->syncAvailabilityFromOrders();
                 break;
 
             case DisputeResolutionType::PartialRefund:

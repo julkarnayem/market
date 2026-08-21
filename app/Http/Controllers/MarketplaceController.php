@@ -223,6 +223,10 @@ class MarketplaceController extends Controller
                 ->orWhere('status', AssetStatus::BidAccepted))
             ->with(['seller','category.attributes','coverImage','images','attributeValues.attribute','acceptedBid.bidder'])
             ->withCount('favorites')
+            // Rating aggregates come back with the listing itself rather than
+            // being counted in a loop.
+            ->withCount('reviews')
+            ->withAvg('reviews', 'rating')
             ->firstOrFail();
 
         $tracker->record($asset, $request);
@@ -299,6 +303,23 @@ class MarketplaceController extends Controller
         $description = Str::limit(strip_tags($asset->description ?? ''), 155);
 
         return Inertia::render('Marketplace/Show', [
+            // Buyer reviews of this listing. One query for the page, eager-loading
+            // the reviewer so the list does not fan out.
+            'reviews' => [
+                'average' => $asset->reviews_avg_rating !== null
+                    ? round((float) $asset->reviews_avg_rating, 1)
+                    : null,
+                'count'   => (int) $asset->reviews_count,
+                'items'   => $asset->reviews()->with('reviewer')->latest()->limit(5)->get()
+                    ->map(fn ($review) => [
+                        'id'               => $review->id,
+                        'rating'           => (int) $review->rating,
+                        'comment'          => $review->comment,
+                        'reviewer_name'    => $review->reviewer?->name ?? 'Deleted user',
+                        'reviewer_initial' => mb_strtoupper(mb_substr($review->reviewer?->name ?? '?', 0, 1)),
+                        'at'               => $review->created_at?->format('d M Y'),
+                    ])->values()->all(),
+            ],
             'asset' => [
                 'id'                 => $asset->id,
                 'slug'               => $asset->slug,

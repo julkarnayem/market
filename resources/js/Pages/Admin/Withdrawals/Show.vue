@@ -8,8 +8,11 @@ import WithdrawalActions from '@/Components/WithdrawalActions.vue';
 
 interface WithdrawalDetail {
     id: number;
+    /** Buyer-facing handle, e.g. WD-10007. */
+    reference: string;
     user_name: string;
     status: string;
+    status_label: string;
     amount_formatted: string;
     fee_formatted: string;
     net_formatted: string;
@@ -18,6 +21,7 @@ interface WithdrawalDetail {
     requested: string;
     approved_at: string | null;
     rejected_at: string | null;
+    cancelled_at: string | null;
     completed_at: string | null;
     external_reference: string | null;
     rejection_reason: string | null;

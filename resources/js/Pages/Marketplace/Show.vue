@@ -68,6 +68,19 @@ interface BidRow {
 
 const props = defineProps<{
     asset: AssetDetail;
+    /** Rating aggregates + the latest few reviews, built by MarketplaceController. */
+    reviews: {
+        average: number | null;
+        count: number;
+        items: {
+            id: number;
+            rating: number;
+            comment: string | null;
+            reviewer_name: string;
+            reviewer_initial: string;
+            at: string | null;
+        }[];
+    };
     related: AssetCardData[];
     isFavorited: boolean;
     canManage: boolean;
@@ -352,6 +365,40 @@ const stockLine = computed(() => {
                         <Link :href="route('legal', 'buyer-protection')" class="mt-3 inline-block text-xs font-medium text-brand-600 hover:text-brand-700">
                             Read buyer protection policy →
                         </Link>
+                    </div>
+
+                    <!-- Buyer reviews — aggregates computed server-side. -->
+                    <div v-if="reviews.count > 0" class="card-p">
+                        <div class="mb-3 flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                            <h2 class="font-display text-lg font-bold text-slate-900">Buyer reviews</h2>
+                            <div class="flex items-center gap-2">
+                                <span class="text-amber-500">{{ '★'.repeat(Math.round(reviews.average ?? 0)) }}</span>
+                                <span class="font-semibold text-slate-900">{{ reviews.average }}</span>
+                                <span class="text-sm text-slate-500">
+                                    ({{ reviews.count }} {{ reviews.count === 1 ? 'review' : 'reviews' }})
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col gap-3">
+                            <div v-for="rv in reviews.items" :key="rv.id" class="flex gap-3">
+                                <div
+                                    class="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full bg-brand-50 text-sm font-bold text-brand-600"
+                                >
+                                    {{ rv.reviewer_initial }}
+                                </div>
+                                <div class="min-w-0">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span class="text-sm font-semibold text-slate-900">{{ rv.reviewer_name }}</span>
+                                        <span class="text-xs text-amber-500">{{ '★'.repeat(rv.rating) }}</span>
+                                        <span class="text-xs text-slate-500">{{ rv.at }}</span>
+                                    </div>
+                                    <p v-if="rv.comment" class="mt-1 whitespace-pre-line text-sm text-slate-700">
+                                        {{ rv.comment }}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Related -->

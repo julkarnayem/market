@@ -3,6 +3,7 @@ namespace App\Models;
 
 use App\Enums\AssetStatus;
 use App\Enums\InventoryType;
+use App\Enums\OrderStatus;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -49,6 +50,9 @@ class Asset extends Model
     public function activeBids(): HasMany  { return $this->hasMany(Bid::class)->where('status','active'); }
     public function acceptedBid(): BelongsTo { return $this->belongsTo(Bid::class, 'accepted_bid_id'); }
     public function orders(): HasMany     { return $this->hasMany(Order::class); }
+    // Buyer reviews of this listing. Unrelated to `reviewed_by`/`reviewed_at`,
+    // which record an admin's moderation of the listing itself.
+    public function reviews(): HasMany    { return $this->hasMany(Review::class); }
     public function promotions(): HasMany { return $this->hasMany(Promotion::class); }
     public function favorites(): HasMany  { return $this->hasMany(Favorite::class); }
     public function views(): HasMany      { return $this->hasMany(AssetView::class); }
@@ -86,6 +90,48 @@ class Asset extends Model
     public function isAvailableForPurchase(): bool
     {
         return $this->status === AssetStatus::Published && !$this->isSoldOut();
+    }
+
+    /**
+     * Re-derive the stock counters from the orders that actually hold stock.
+     *
+     * Stock is taken at payment and, until now, never given back: an order that
+     * was fully refunded left `available_quantity` at zero and the listing stuck
+     * on `sold_out` for good. Rather than incrementing back — which would drift
+     * from reality after any manual correction — this recomputes both counters
+     * from the listing's own orders, so the answer is always "quantity minus what
+     * is genuinely sold". That is also what makes the multi-order case right: a
+     * refund only frees the listing when no other valid sale is left holding it.
+     *
+     * Call this after any change to an order's status that alters whether it
+     * counts as a sale.
+     */
+    public function syncAvailabilityFromOrders(): void
+    {
+        $sold = (int) $this->orders()
+            ->whereIn('status', OrderStatus::saleValues())
+            ->sum('quantity');
+
+        $updates = ['sold_quantity' => $sold];
+
+        // Unlimited listings hold no stock and are never sold out, so only the
+        // counter above means anything for them.
+        if ($this->inventoryType()->consumesInventory()) {
+            $available = max(0, (int) $this->quantity - $sold);
+            $updates['available_quantity'] = $available;
+
+            // Only the two states that payment and refund own are flipped here.
+            // Draft, paused, suspended, archived, rejected, pending review and
+            // bid_accepted all mean something this method has no business
+            // overwriting.
+            if ($available > 0 && $this->status === AssetStatus::SoldOut) {
+                $updates['status'] = AssetStatus::Published;
+            } elseif ($available <= 0 && $this->status === AssetStatus::Published) {
+                $updates['status'] = AssetStatus::SoldOut;
+            }
+        }
+
+        $this->update($updates);
     }
 
     /**

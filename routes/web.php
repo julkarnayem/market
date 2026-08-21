@@ -149,6 +149,9 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::get('/wallet', [WalletController::class, 'index'])->name('.wallet');
         Route::get('/withdrawals', [WithdrawalController::class, 'index'])->name('.withdrawals');
         Route::post('/withdrawals', [WithdrawalController::class, 'store'])->middleware('throttle:5,1')->name('.withdrawals.store');
+        // The user takes back their own pending request; the service re-checks
+        // ownership and the status under a lock before returning the funds.
+        Route::post('/withdrawals/{withdrawal}/cancel', [WithdrawalController::class, 'cancel'])->name('.withdrawals.cancel');
 
         // Promotions
         Route::get('/promotions', [PromotionController::class, 'index'])->name('.promotions');
