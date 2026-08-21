@@ -49,7 +49,10 @@ class WithdrawalController extends Controller
                 'fee_formatted'  => Money::format((int) $w->fee),
                 'net_formatted'  => Money::format((int) $w->net_amount),
                 'provider'       => $w->methodLabel(),
-                'account'        => $w->maskedAccount(),
+                // The payout destination in full — staff pay from this list, so
+                // they need the real number here. (Only the owner and staff ever
+                // see a withdrawal, so there is nothing to mask.)
+                'account'        => $w->fullAccount(),
                 'status'         => $w->status->value,
                 'status_label'   => $w->status->label(),
                 'created'        => $w->created_at->format('d M Y'),
@@ -85,13 +88,24 @@ class WithdrawalController extends Controller
                 'fee_formatted'    => Money::format((int) $withdrawal->fee),
                 'net_formatted'    => Money::format((int) $withdrawal->net_amount),
                 'provider'         => $withdrawal->methodLabel(),
-                'account'          => $withdrawal->maskedAccount(),
                 'requested'        => $withdrawal->created_at->format('d M Y, H:i'),
                 'rejected_at'      => $withdrawal->rejected_at?->format('d M Y, H:i'),
                 'cancelled_at'     => $withdrawal->cancelled_at?->format('d M Y, H:i'),
                 'completed_at'     => $withdrawal->processed_at?->format('d M Y, H:i'),
                 'external_reference' => $withdrawal->external_reference,
                 'rejection_reason' => $withdrawal->rejection_reason,
+            ],
+            // The FULL, unmasked destination — the one place staff see it, because
+            // they cannot send the money without it. Lists and the user's own
+            // history stay masked; this detail view is already gated on
+            // withdrawals.view, so only staff reach it.
+            'payout' => [
+                'method'              => $withdrawal->method,
+                'mfs_number'          => $withdrawal->mfs_number,
+                'bank_account_name'   => $withdrawal->bank_account_name,
+                'bank_account_number' => $withdrawal->bank_account_number,
+                'bank_name'           => $withdrawal->bank_name,
+                'bank_branch'         => $withdrawal->bank_branch,
             ],
             'wallet' => $wallet ? [
                 'available_formatted' => Money::format((int) $wallet->available_balance),

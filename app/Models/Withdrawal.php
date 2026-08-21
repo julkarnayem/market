@@ -28,14 +28,46 @@ class Withdrawal extends Model
         ];
     }
 
+    protected static function booted(): void
+    {
+        // Mint the reference's random half once, up front, for every path that
+        // creates a withdrawal (service, factory, direct create). The token does
+        // not depend on the id, so it is safe to set before insert.
+        static::creating(function (self $withdrawal) {
+            if (empty($withdrawal->reference_token)) {
+                $withdrawal->reference_token = self::generateReferenceToken();
+            }
+        });
+    }
+
     public function user(): BelongsTo      { return $this->belongsTo(User::class); }
     public function reviewer(): BelongsTo  { return $this->belongsTo(User::class,'reviewed_by'); }
     public function completer(): BelongsTo { return $this->belongsTo(User::class,'completed_by'); }
 
-    /** The buyer-facing handle, so support can be given something to quote. */
+    /**
+     * The buyer-facing handle, so support can be given something to quote:
+     * WD-{id}{TOKEN}, e.g. WD-7RASRSC42JFW. The id keeps it unique; the token is
+     * a stored random suffix so it cannot be guessed from the sequence alone.
+     */
     public function reference(): string
     {
-        return 'WD-' . (10000 + (int) $this->id);
+        return 'WD-' . (int) $this->id . (string) $this->reference_token;
+    }
+
+    /**
+     * The random half of the reference. Uppercase A–Z and digits so it reads
+     * cleanly over the phone; the id in front guarantees uniqueness, so this
+     * needs no collision check.
+     */
+    public static function generateReferenceToken(int $length = 10): string
+    {
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        $token    = '';
+        for ($i = 0; $i < $length; $i++) {
+            $token .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        }
+
+        return $token;
     }
 
     /**
@@ -56,35 +88,24 @@ class Withdrawal extends Model
         return $this->methodEnum()?->label() ?? strtoupper((string) ($this->mfs_provider ?: $this->method));
     }
 
-    /** Masked MFS number for display (e.g. 01*****789) */
-    public function maskedNumber(): string
-    {
-        return self::mask($this->mfs_number ?? '');
-    }
-
     /**
-     * What the destination account is, masked. Never render the raw account
-     * number — this is the only accessor any payload should use.
+     * The payout destination, in full. Only the account owner (their own
+     * withdrawal history) and staff (the admin list + detail page) ever see a
+     * withdrawal, and staff cannot send money to a masked number — so there is
+     * no third party to hide it from, and nothing is masked.
      */
-    public function maskedAccount(): string
+    public function fullAccount(): string
     {
         if ($this->method === 'bank') {
-            return trim(($this->bank_name ?? '') . ' ' . self::mask((string) $this->bank_account_number));
+            return trim(($this->bank_name ?? '') . ' ' . (string) $this->bank_account_number);
         }
 
-        return $this->maskedNumber();
+        return (string) $this->mfs_number;
     }
 
     /** Only the user's own pending request is theirs to withdraw. */
     public function isCancellable(): bool
     {
         return $this->status === WithdrawalStatus::Pending;
-    }
-
-    private static function mask(string $value): string
-    {
-        if (strlen($value) <= 6) return $value;
-
-        return substr($value, 0, 2) . str_repeat('*', strlen($value) - 5) . substr($value, -3);
     }
 }

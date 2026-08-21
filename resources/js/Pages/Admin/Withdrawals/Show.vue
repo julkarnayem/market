@@ -8,7 +8,7 @@ import WithdrawalActions from '@/Components/WithdrawalActions.vue';
 
 interface WithdrawalDetail {
     id: number;
-    /** Buyer-facing handle, e.g. WD-10007. */
+    /** Buyer-facing handle, e.g. WD-7RASRSC42JFW. */
     reference: string;
     user_name: string;
     status: string;
@@ -17,7 +17,6 @@ interface WithdrawalDetail {
     fee_formatted: string;
     net_formatted: string;
     provider: string;
-    account: string;
     requested: string;
     rejected_at: string | null;
     cancelled_at: string | null;
@@ -26,8 +25,20 @@ interface WithdrawalDetail {
     rejection_reason: string | null;
 }
 
+/** The full, unmasked destination — staff-only, shown so the payout can be sent. */
+interface Payout {
+    /** 'mfs' | 'bank'. */
+    method: string;
+    mfs_number: string | null;
+    bank_account_name: string | null;
+    bank_account_number: string | null;
+    bank_name: string | null;
+    bank_branch: string | null;
+}
+
 const props = defineProps<{
     withdrawal: WithdrawalDetail;
+    payout: Payout;
     wallet: { available_formatted: string; pending_formatted: string } | null;
 }>();
 
@@ -59,7 +70,6 @@ const rows = computed<DetailRow[]>(() => {
         { label: 'Withdrawal fee', value: w.fee_formatted, money: true, tone: 'text-rose-600' },
         { label: 'Net payout', value: w.net_formatted, money: true, tone: 'font-bold text-emerald-600' },
         { label: 'Provider', value: w.provider, tone: 'font-semibold uppercase' },
-        { label: 'Account (masked)', value: w.account, tone: 'font-mono' },
         { label: 'Requested', value: w.requested },
         ...(w.rejected_at ? [{ label: 'Rejected at', value: w.rejected_at }] : []),
         ...(w.completed_at ? [{ label: 'Paid at', value: w.completed_at }] : []),
@@ -94,6 +104,37 @@ const rows = computed<DetailRow[]>(() => {
                     <p class="font-semibold text-rose-800">Rejection reason:</p>
                     <p class="text-rose-600">{{ withdrawal.rejection_reason }}</p>
                 </div>
+            </div>
+
+            <!-- Payout destination: full + unmasked, so staff can actually send it.
+                 Click a value to select it whole (select-all) for quick copy. -->
+            <div class="card-p">
+                <h2 class="section-title mb-2">Send payout to</h2>
+                <dl class="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
+                    <div v-if="payout.method !== 'bank'" class="rounded-lg bg-slate-50 p-2 sm:col-span-2">
+                        <dt class="text-xs text-slate-500">{{ withdrawal.provider }} number</dt>
+                        <dd class="select-all font-mono text-base font-semibold">{{ payout.mfs_number }}</dd>
+                    </div>
+                    <template v-else>
+                        <div class="rounded-lg bg-slate-50 p-2">
+                            <dt class="text-xs text-slate-500">Account holder</dt>
+                            <dd class="font-semibold">{{ payout.bank_account_name }}</dd>
+                        </div>
+                        <div class="rounded-lg bg-slate-50 p-2">
+                            <dt class="text-xs text-slate-500">Account number</dt>
+                            <dd class="select-all font-mono text-base font-semibold">{{ payout.bank_account_number }}</dd>
+                        </div>
+                        <div class="rounded-lg bg-slate-50 p-2">
+                            <dt class="text-xs text-slate-500">Bank</dt>
+                            <dd class="font-semibold">{{ payout.bank_name }}</dd>
+                        </div>
+                        <div v-if="payout.bank_branch" class="rounded-lg bg-slate-50 p-2">
+                            <dt class="text-xs text-slate-500">Branch / routing</dt>
+                            <dd>{{ payout.bank_branch }}</dd>
+                        </div>
+                    </template>
+                </dl>
+                <p class="mt-2 text-xs text-amber-600">Full details, shown for payout only — don't share or screenshot.</p>
             </div>
 
             <!-- User wallet -->

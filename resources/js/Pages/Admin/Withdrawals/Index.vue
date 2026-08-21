@@ -10,7 +10,7 @@ import type { Paginated } from '@/types';
 /** One withdrawal row — whitelisted by Admin\WithdrawalController::index(). */
 interface WithdrawalRow {
     id: number;
-    /** Buyer-facing handle, e.g. WD-10007. */
+    /** Buyer-facing handle, e.g. WD-7RASRSC42JFW. */
     reference: string;
     user_name: string;
     user_email: string;
@@ -101,7 +101,12 @@ function applyFilters() {
                         <td class="font-mono text-xs">{{ w.account }}</td>
                         <td><StatusBadge :status="w.status" :label="w.status_label" /></td>
                         <td class="text-xs text-slate-500">{{ w.created }}</td>
-                        <td><WithdrawalActions :id="w.id" :status="w.status" /></td>
+                        <td>
+                            <div class="flex items-center gap-1">
+                                <Link :href="w.url" class="btn-ghost btn-sm">View</Link>
+                                <WithdrawalActions v-if="w.status === 'pending'" :id="w.id" :status="w.status" />
+                            </div>
+                        </td>
                     </tr>
                     <tr v-if="withdrawals.data.length === 0">
                         <td colspan="10" class="py-4 text-center text-slate-500">No withdrawals found.</td>
@@ -124,8 +129,9 @@ function applyFilters() {
                     <span class="money font-bold text-emerald-600">{{ w.net_formatted }}</span>
                     <span class="text-xs text-slate-500">{{ w.created }}</span>
                 </div>
-                <div class="border-t border-slate-100 pt-2">
-                    <WithdrawalActions :id="w.id" :status="w.status" />
+                <div class="flex items-center gap-2 border-t border-slate-100 pt-2">
+                    <Link :href="w.url" class="btn-ghost btn-sm">View</Link>
+                    <WithdrawalActions v-if="w.status === 'pending'" :id="w.id" :status="w.status" />
                 </div>
             </div>
             <p v-if="withdrawals.data.length === 0" class="card-p text-center text-sm text-slate-500">

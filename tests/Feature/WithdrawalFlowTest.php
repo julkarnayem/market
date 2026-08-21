@@ -99,6 +99,24 @@ class WithdrawalFlowTest extends TestCase
         $this->assertSame(Money::toPoisha(5000) - 100000, $this->available($buyer));
     }
 
+    public function test_the_reference_is_wd_id_plus_a_stored_random_token(): void
+    {
+        $user = $this->funded(5000);
+        $a    = $this->pendingWithdrawal($user);
+        $b    = $this->pendingWithdrawal($user->fresh());
+
+        // A token is minted and stored on create…
+        $this->assertMatchesRegularExpression('/^[A-Z0-9]{10}$/', (string) $a->reference_token);
+        // …and the handle is WD-{id}{TOKEN}, e.g. WD-7RASRSC42JFW.
+        $this->assertSame('WD-' . $a->id . $a->reference_token, $a->reference());
+        $this->assertMatchesRegularExpression('/^WD-\d+[A-Z0-9]{10}$/', $a->reference());
+
+        // Stored, so it is stable across reloads — not recomputed each time.
+        $this->assertSame($a->reference(), $a->fresh()->reference());
+        // Two withdrawals get different random halves.
+        $this->assertNotSame($a->reference_token, $b->reference_token);
+    }
+
     public function test_a_seller_can_request_a_withdrawal_from_available_balance(): void
     {
         // A real seller balance: earning credited to pending at payment, then
@@ -138,9 +156,9 @@ class WithdrawalFlowTest extends TestCase
         $this->assertSame('bank', $w->method);
         $this->assertNull($w->mfs_provider);
         $this->assertSame('Dutch-Bangla Bank', $w->bank_name);
-        // Never rendered in full.
-        $this->assertStringContainsString('*', $w->maskedAccount());
-        $this->assertStringNotContainsString('1234567890123', $w->maskedAccount());
+        // Rendered in full: only the owner and staff ever see a withdrawal.
+        $this->assertStringContainsString('1234567890123', $w->fullAccount());
+        $this->assertStringContainsString('Dutch-Bangla Bank', $w->fullAccount());
     }
 
     public function test_a_bank_withdrawal_requires_its_own_fields(): void
@@ -324,6 +342,65 @@ class WithdrawalFlowTest extends TestCase
         $this->assertSame('TRX-1', $fresh->external_reference);
         // Paying out moves no money now — the gross left at request time.
         $this->assertSame($before, $this->available($user));
+    }
+
+    /**
+     * The destination is shown in full everywhere it appears — the owner's own
+     * history and both admin surfaces (the list they act from and the detail
+     * page). Only those two parties ever see a withdrawal, and staff cannot send
+     * money to a masked number, so nothing is masked.
+     */
+    public function test_the_account_number_is_shown_in_full(): void
+    {
+        $user = $this->funded(5000);
+
+        // A bank withdrawal, so there is a full account number to check.
+        $this->actingAs($user)->post('/dashboard/withdrawals', [
+            'amount_bdt'          => 1000,
+            'method'              => 'bank',
+            'bank_account_name'   => 'Bilkis Buyer',
+            'bank_account_number' => '1234567890123',
+            'bank_name'           => 'Dutch-Bangla Bank',
+            'bank_branch'         => 'Gulshan',
+        ])->assertRedirect();
+
+        $w     = Withdrawal::firstOrFail();
+        $admin = $this->admin();
+
+        // The list staff act from (Mark paid is inline here) shows it in full.
+        $this->actingAs($admin)
+            ->get('/admin/withdrawals')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Withdrawals/Index')
+                ->where('withdrawals.data.0.account', fn ($v) => str_contains((string) $v, '1234567890123'))
+                ->where('withdrawals.data.0.account', fn ($v) => ! str_contains((string) $v, '*'))
+                ->etc()
+            );
+
+        // The detail page carries the full structured destination too.
+        $this->actingAs($admin)
+            ->get("/admin/withdrawals/{$w->id}")
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Admin/Withdrawals/Show')
+                ->where('payout.method', 'bank')
+                ->where('payout.bank_account_number', '1234567890123')
+                ->where('payout.bank_account_name', 'Bilkis Buyer')
+                ->where('payout.bank_name', 'Dutch-Bangla Bank')
+                ->etc()
+            );
+
+        // The owner sees their own number in full — it is theirs.
+        $this->actingAs($user)
+            ->get('/dashboard/withdrawals')
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->component('Dashboard/Withdrawals')
+                ->where('withdrawals.data.0.account', fn ($v) => str_contains((string) $v, '1234567890123'))
+                ->where('withdrawals.data.0.account', fn ($v) => ! str_contains((string) $v, '*'))
+                ->etc()
+            );
     }
 
     public function test_an_admin_can_reject_and_the_funds_return_once(): void

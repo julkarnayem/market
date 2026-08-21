@@ -9,15 +9,15 @@ import type { Paginated } from '@/types';
 /** One withdrawal history row — whitelisted by WithdrawalController::index(). */
 interface WithdrawalRow {
     id: number;
-    /** Buyer-facing handle, e.g. WD-10007. */
+    /** Buyer-facing handle, e.g. WD-7RASRSC42JFW. */
     reference: string;
     amount_formatted: string;
     fee_formatted: string;
     net_formatted: string;
     /** Human label for the method, e.g. "bKash" or "Bank transfer". */
     method_label: string;
-    /** Masked destination — never the raw account number. */
-    masked_number: string;
+    /** The user's own payout destination, in full. */
+    account: string;
     /** WithdrawalStatus value, for the badge. */
     status: string;
     status_label: string;
@@ -338,7 +338,7 @@ function cancel(w: WithdrawalRow) {
                                     <td class="money text-rose-600">{{ w.fee_formatted }}</td>
                                     <td class="money font-semibold text-mint-700">{{ w.net_formatted }}</td>
                                     <td class="text-xs">{{ w.method_label }}</td>
-                                    <td class="font-mono text-xs">{{ w.masked_number }}</td>
+                                    <td class="font-mono text-xs">{{ w.account }}</td>
                                     <td><StatusBadge :status="w.status" :label="w.status_label" /></td>
                                     <td class="text-xs text-slate-500">{{ w.date }}</td>
                                     <td class="text-xs text-slate-500">{{ w.processed_at ?? '—' }}</td>
@@ -372,7 +372,7 @@ function cancel(w: WithdrawalRow) {
                             <div>
                                 <span class="money font-bold text-mint-700">{{ w.net_formatted }}</span>
                                 <p class="mt-1 text-xs text-slate-500">
-                                    {{ w.method_label }} · {{ w.masked_number }}
+                                    {{ w.method_label }} · {{ w.account }}
                                 </p>
                                 <p class="mt-0.5 font-mono text-xs text-slate-400">{{ w.reference }}</p>
                             </div>

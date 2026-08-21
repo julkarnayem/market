@@ -62,8 +62,8 @@ class WithdrawalController extends Controller
                     'fee_formatted'    => Money::format($w->fee),
                     'net_formatted'    => Money::format($w->net_amount),
                     'method_label'     => $w->methodLabel(),
-                    // Masked, never the raw account number.
-                    'masked_number'    => $w->maskedAccount(),
+                    // The user's own destination, in full — it is their number.
+                    'account'          => $w->fullAccount(),
                     'status'           => $w->status->value,
                     'status_label'     => $w->status->label(),
                     'date'             => $w->created_at->format('d M Y'),
