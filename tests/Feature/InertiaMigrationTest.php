@@ -754,7 +754,10 @@ class InertiaMigrationTest extends TestCase
                 )
                 ->has('disputes.data', 1)
                 ->has('disputes.data.0', fn (Assert $d) => $d
-                    ->where('reference', 'D-'.(10000 + $dispute->id))
+                    // D-{id}{TOKEN} now, not D-{10000 + id}: the handle is the
+                    // stored one, and it is asserted through the model so this stays
+                    // a check that the queue shows the real reference.
+                    ->where('reference', $dispute->fresh()->displayReference())
                     ->where('buyer', 'Bilkis Buyer')
                     ->where('seller', 'Selim Seller')
                     ->where('order_total', '৳2,500.00')

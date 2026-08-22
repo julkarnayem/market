@@ -57,15 +57,20 @@ class DisputeController extends Controller
                     : ($d->order?->buyer?->name ?? '—'),
                 'total'        => Money::format($d->order?->buyer_total ?? 0),
                 'activity'     => $d->last_activity_at?->diffForHumans() ?? '—',
-                'url'          => route('dashboard.disputes.show', $d->id),
+                'url'          => route('dashboard.disputes.show', $d->viewRouteParams()),
             ]),
         ]);
     }
 
-    /** GET /dashboard/disputes/{dispute} — the thread. */
-    public function show(Dispute $dispute)
+    /** GET /dashboard/disputes/{orderNumber}/{reference} — the thread. */
+    public function show(string $orderNumber, Dispute $dispute)
     {
         $this->authorize('view', $dispute);
+
+        // The reference already identified the row; the order number in front of it
+        // is part of the address, so a mismatched one is a wrong URL rather than a
+        // detail to quietly ignore.
+        abort_unless($orderNumber === $dispute->viewRouteParams()['orderNumber'], 404);
 
         $user  = Auth::user();
         $role  = $dispute->roleOf($user);
@@ -289,7 +294,7 @@ class DisputeController extends Controller
         $data = $request->validate(['note' => 'nullable|string|max:1000']);
         $this->disputes->cancel($dispute, Auth::user(), $data['note'] ?? '');
 
-        return redirect()->route('dashboard.disputes.show', $dispute->id)
+        return redirect()->route('dashboard.disputes.show', $dispute->viewRouteParams())
             ->with('success', 'Dispute closed.');
     }
 }

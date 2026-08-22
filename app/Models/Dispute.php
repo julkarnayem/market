@@ -35,6 +35,29 @@ class Dispute extends Model
         ];
     }
 
+    protected static function booted(): void
+    {
+        // Mint the reference's random half up front. It does not depend on the id,
+        // so every path that creates a dispute — the service, a seeder, a direct
+        // create — gets one without having to remember to ask.
+        static::creating(function (self $dispute) {
+            if (empty($dispute->reference_token)) {
+                $dispute->reference_token = self::generateReferenceToken();
+            }
+        });
+
+        // The id half can only be known once the row exists. This lives here
+        // rather than in DisputeService because the reference is now what the view
+        // URL resolves on: a dispute created by any other path still has to be
+        // addressable.
+        static::created(function (self $dispute) {
+            if (empty($dispute->reference)) {
+                $dispute->reference = 'D-' . (int) $dispute->id . (string) $dispute->reference_token;
+                $dispute->saveQuietly();
+            }
+        });
+    }
+
     public function order(): BelongsTo    { return $this->belongsTo(Order::class); }
     public function opener(): BelongsTo   { return $this->belongsTo(User::class, 'opened_by'); }
     public function resolver(): BelongsTo { return $this->belongsTo(User::class, 'resolved_by'); }
@@ -124,12 +147,47 @@ class Dispute extends Model
     }
 
     /**
-     * Reference for a dispute created before the column existed, or one being
-     * built right now. Stored on create, so this is only a fallback.
+     * The party-facing handle: D-{id}{TOKEN}, e.g. D-4Q9WJ5NXR7TB. Same shape as
+     * Withdrawal::reference() — the id keeps it unique, the stored random token
+     * stops the sequence being guessable. Written on create, so the fallback here
+     * only covers a row being built right now.
      */
     public function displayReference(): string
     {
-        return $this->reference ?: 'D-' . (10000 + (int) $this->id);
+        return $this->reference ?: 'D-' . (int) $this->id . (string) $this->reference_token;
+    }
+
+    /**
+     * The random half of the reference. Uppercase A–Z and digits so it reads
+     * cleanly over the phone and needs no URL escaping; the id in front
+     * guarantees uniqueness, so this needs no collision check.
+     */
+    public static function generateReferenceToken(int $length = 10): string
+    {
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        $token    = '';
+        for ($i = 0; $i < $length; $i++) {
+            $token .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        }
+
+        return $token;
+    }
+
+    /**
+     * The two segments of this dispute's view URL. The order number is there
+     * because it is what the parties actually quote to each other; the reference
+     * is what resolves the row, since an order may hold more than one dispute
+     * over its life and so cannot identify one on its own.
+     *
+     * The placeholder for a dispute with no order is a plain hyphen rather than
+     * the em dash used for display, so the URL stays ASCII.
+     */
+    public function viewRouteParams(): array
+    {
+        return [
+            'orderNumber' => $this->order?->order_number ?: '-',
+            'dispute'     => $this->displayReference(),
+        ];
     }
 
     public function hasInternalNotes(): bool

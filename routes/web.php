@@ -126,7 +126,12 @@ Route::middleware(['auth', 'active'])->group(function () {
         // Disputes — the buyer's and seller's side of one. Every action here is
         // authorized by DisputePolicy; the admin decisions live under /admin.
         Route::get('/disputes', [DisputeController::class, 'index'])->name('.disputes');
-        Route::get('/disputes/{dispute}', [DisputeController::class, 'show'])->name('.disputes.show');
+        // The view URL carries the order number for readability and resolves on the
+        // dispute's reference, so no numeric id is exposed. The reference pattern
+        // keeps this from swallowing any other two-segment path under /disputes.
+        Route::get('/disputes/{orderNumber}/{dispute:reference}', [DisputeController::class, 'show'])
+            ->where('dispute', 'D-[A-Za-z0-9]+')
+            ->name('.disputes.show');
         Route::post('/disputes/{dispute}/messages', [DisputeController::class, 'message'])->name('.disputes.message');
         Route::post('/disputes/{dispute}/evidence', [DisputeController::class, 'storeEvidence'])->name('.disputes.evidence.store');
         // The only route to a private evidence file — it authorizes the reader.

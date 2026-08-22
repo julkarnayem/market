@@ -81,8 +81,8 @@ class DisputeService
                 'last_activity_at' => now(),
             ]);
 
-            // The handle is derived from the id, so it can only be set post-insert.
-            $dispute->update(['reference' => 'D-' . (10000 + (int) $dispute->id)]);
+            // The reference is minted by Dispute's creating/created hooks, so it is
+            // already populated here — including for disputes created anywhere else.
 
             $order->update(['status' => OrderStatus::Disputed, 'dispute_status' => DisputeStatus::Open->value]);
             $order->statusHistory()->create([
@@ -958,7 +958,7 @@ class DisputeService
 
         $this->notifications->inApp($user, $type, $title, $message, [
             'dispute_id' => $dispute->id,
-            'url'        => route('dashboard.disputes.show', $dispute->id),
+            'url'        => route('dashboard.disputes.show', $dispute->viewRouteParams()),
         ]);
     }
 }

@@ -140,7 +140,12 @@ class OrderController extends Controller
                 'status'       => $order->dispute->status->value,
                 'status_label' => $order->dispute->status->label(),
                 'is_active'    => $order->dispute->isActive(),
-                'url'          => route('dashboard.disputes.show', $order->dispute->id),
+                // The order is already in hand, so hand it to the dispute rather
+                // than let viewRouteParams() fetch it back out of the database.
+                'url'          => route(
+                    'dashboard.disputes.show',
+                    $order->dispute->setRelation('order', $order)->viewRouteParams(),
+                ),
             ] : null,
         ]);
     }
@@ -206,7 +211,7 @@ class OrderController extends Controller
             $data['description'],
         );
 
-        return redirect()->route('dashboard.disputes.show', $dispute->id)
+        return redirect()->route('dashboard.disputes.show', $dispute->setRelation('order', $order)->viewRouteParams())
             ->with('success', "Dispute {$dispute->reference} opened. The seller has 48 hours to respond.");
     }
 

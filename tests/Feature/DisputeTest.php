@@ -148,6 +148,17 @@ class DisputeTest extends TestCase
     }
 
     /**
+     * The dispute's view URL. It carries the order number and resolves on the
+     * reference — no numeric id — so it is built from the model rather than
+     * spelled out, and a change to the shape does not have to be chased through
+     * every test below.
+     */
+    private function showUrl(Dispute $dispute): string
+    {
+        return route('dashboard.disputes.show', $dispute->viewRouteParams(), false);
+    }
+
+    /**
      * The headers Inertia sends for the partial reload the page polls with.
      *
      * The version has to match what the middleware will compute for this request —
@@ -161,7 +172,7 @@ class DisputeTest extends TestCase
         $version = (string) (new \App\Http\Middleware\HandleInertiaRequests())
             ->version(request());
 
-        return $this->get("/dashboard/disputes/{$dispute->id}", [
+        return $this->get($this->showUrl($dispute), [
             'X-Inertia'                   => 'true',
             'X-Inertia-Version'           => $version,
             'X-Inertia-Partial-Component' => 'Dashboard/Disputes/Show',
@@ -206,8 +217,15 @@ class DisputeTest extends TestCase
         $this->assertSame('not_working', $dispute->reason_code->value);
         $this->assertSame(DisputeStatus::Open, $dispute->status);
         $this->assertSame($order->buyer_user_id, (int) $dispute->opened_by);
-        // The handle is derived from the id, so it can only be set post-insert.
-        $this->assertSame('D-'.(10000 + $dispute->id), $dispute->reference);
+        // D-{id}{TOKEN}, the shape Withdrawal::reference() already uses. The id
+        // keeps it unique; the random token is the point — the old D-{10000 + id}
+        // handle let anyone holding one address every other dispute by counting.
+        $this->assertMatchesRegularExpression(
+            '/^D-' . $dispute->id . '[A-Z0-9]{10}$/',
+            $dispute->reference,
+        );
+        $this->assertNotSame('D-' . (10000 + $dispute->id), $dispute->reference);
+        $this->assertSame(10, strlen((string) $dispute->reference_token));
         $this->assertNotNull($dispute->last_activity_at);
 
         // The order mirrors the dispute for the life of it.
@@ -358,7 +376,7 @@ class DisputeTest extends TestCase
         $dispute = $this->disputedOrder();
 
         $this->actingAs($dispute->order->buyer)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->component('Dashboard/Disputes/Show')
@@ -389,7 +407,7 @@ class DisputeTest extends TestCase
         $dispute = $this->disputedOrder();
 
         $this->actingAs($dispute->order->seller)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('role', 'seller')
@@ -411,7 +429,7 @@ class DisputeTest extends TestCase
         $stranger = $this->buyer();
 
         $this->actingAs($stranger)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertForbidden();
     }
 
@@ -485,12 +503,12 @@ class DisputeTest extends TestCase
 
         // The buyer's thread carries the opening system line and nothing else.
         $this->actingAs($dispute->order->buyer)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page->has('thread', 1));
 
         $this->actingAs($dispute->order->seller)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page->has('thread', 1));
 
@@ -621,7 +639,7 @@ class DisputeTest extends TestCase
         );
 
         $this->actingAs($dispute->order->seller)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('pending.type', 'partial_refund')
@@ -635,7 +653,7 @@ class DisputeTest extends TestCase
 
         // …and the proposer may take it back, but not answer it.
         $this->actingAs($dispute->order->buyer)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertInertia(fn (Assert $page) => $page
                 ->where('pending.is_mine', true)
                 ->where('can.respond', false)
@@ -941,7 +959,7 @@ class DisputeTest extends TestCase
 
         // The button is gone from the page, and the route refuses a second one.
         $this->actingAs($dispute->order->buyer)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertInertia(fn (Assert $page) => $page->where('can.escalate', false)->etc());
 
         $this->actingAs($dispute->order->seller)
@@ -960,7 +978,7 @@ class DisputeTest extends TestCase
 
         $this->actingAs($buyer)
             ->post("/dashboard/disputes/{$dispute->id}/cancel", ['note' => 'The seller fixed it.'])
-            ->assertRedirect("/dashboard/disputes/{$dispute->id}")
+            ->assertRedirect($this->showUrl($dispute))
             ->assertSessionHas('success');
 
         $fresh = $dispute->fresh();
@@ -1188,7 +1206,7 @@ class DisputeTest extends TestCase
 
         // The parties see it, marked as a system event rather than someone's reply.
         $this->actingAs($dispute->order->buyer)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page
                 ->where('thread.1.is_system', true)
@@ -1414,6 +1432,63 @@ class DisputeTest extends TestCase
         $this->assertSame(0, $dispute->messages()->where('role', 'admin')->count());
     }
 
+    // ── Reference and view URL ───────────────────────────────────────
+
+    /** Two disputes opened back to back must not read as a sequence. */
+    public function test_references_are_not_guessable_from_one_another(): void
+    {
+        $first  = $this->disputedOrder();
+        $second = $this->disputedOrder();
+
+        $this->assertNotSame($first->reference_token, $second->reference_token);
+        // Knowing the first reference tells you nothing about the second beyond
+        // the id, which is exactly what the token is there to cover.
+        $this->assertNotSame(
+            str_replace((string) $first->id, (string) $second->id, $first->reference),
+            $second->reference,
+        );
+    }
+
+    public function test_the_view_url_carries_the_order_number_and_no_numeric_id(): void
+    {
+        $dispute = $this->disputedOrder();
+        $url     = $this->showUrl($dispute);
+
+        $this->assertStringContainsString($dispute->order->order_number, $url);
+        $this->assertStringContainsString($dispute->reference, $url);
+        $this->assertSame(
+            "/dashboard/disputes/{$dispute->order->order_number}/{$dispute->reference}",
+            $url,
+        );
+
+        $this->actingAs($dispute->order->buyer)->get($url)->assertOk();
+    }
+
+    /** The old id-keyed URL is gone, not quietly aliased. */
+    public function test_the_numeric_id_url_no_longer_resolves(): void
+    {
+        $dispute = $this->disputedOrder();
+
+        $this->actingAs($dispute->order->buyer)
+            ->get("/dashboard/disputes/{$dispute->id}")
+            ->assertNotFound();
+    }
+
+    /**
+     * The order number is part of the address, so pairing a real reference with
+     * someone else's order number is a wrong URL rather than a shortcut into a
+     * thread the reference alone would have opened.
+     */
+    public function test_a_mismatched_order_number_is_rejected(): void
+    {
+        $dispute = $this->disputedOrder();
+        $other   = $this->disputedOrder();
+
+        $this->actingAs($dispute->order->buyer)
+            ->get("/dashboard/disputes/{$other->order->order_number}/{$dispute->reference}")
+            ->assertNotFound();
+    }
+
     // ── Cross-dispute isolation ──────────────────────────────────────
 
     public function test_a_buyer_cannot_reach_another_disputes_thread(): void
@@ -1422,7 +1497,7 @@ class DisputeTest extends TestCase
         $theirs = $this->disputedOrder();
 
         $this->actingAs($mine->order->buyer)
-            ->get("/dashboard/disputes/{$theirs->id}")
+            ->get($this->showUrl($theirs))
             ->assertForbidden();
 
         $this->actingAs($mine->order->buyer)
@@ -1438,7 +1513,7 @@ class DisputeTest extends TestCase
         $theirs = $this->disputedOrder();
 
         $this->actingAs($mine->order->seller)
-            ->get("/dashboard/disputes/{$theirs->id}")
+            ->get($this->showUrl($theirs))
             ->assertForbidden();
 
         $this->actingAs($mine->order->seller)
@@ -1458,13 +1533,13 @@ class DisputeTest extends TestCase
 
         config()->set('broadcasting.default', 'null');
         $this->actingAs($dispute->order->buyer)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page->where('isRealtimeReady', false)->etc());
 
         config()->set('broadcasting.default', 'reverb');
         $this->actingAs($dispute->order->buyer)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertOk()
             ->assertInertia(fn (Assert $page) => $page->where('isRealtimeReady', true)->etc());
     }
@@ -1482,7 +1557,7 @@ class DisputeTest extends TestCase
 
         // What the buyer has on screen right now.
         $this->actingAs($buyer)
-            ->get("/dashboard/disputes/{$dispute->id}")
+            ->get($this->showUrl($dispute))
             ->assertInertia(fn (Assert $page) => $page->has('thread', 1)->etc());
 
         $this->actingAs($seller)
